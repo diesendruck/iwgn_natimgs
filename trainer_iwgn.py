@@ -70,19 +70,17 @@ def nhwc_to_nchw(image, is_tf=False):
         return new_image
 
 
-def convert_255_to_n11(image, data_format=None):
+def convert_255_to_n11(image):
     ''' Converts pixel values to range [-1, 1].'''
     image = image/127.5 - 1.
-    if data_format:
-        image = to_nhwc(image, data_format)
     return image
 
 
-def convert_n11_to_255(image, data_format, is_tf=False):
+def convert_n11_to_255(image, is_tf=False):
     if is_tf:
-        return tf.clip_by_value(to_nhwc((image + 1)*127.5, data_format, is_tf=True), 0, 255)
+        return tf.clip_by_value((image + 1)*127.5, 0, 255)
     else:
-        return np.clip(to_nhwc((image + 1)*127.5, data_format), 0, 255)
+        return np.clip((image + 1)*127.5, 0, 255)
 
 
 def convert_01_to_n11(image):
@@ -90,7 +88,7 @@ def convert_01_to_n11(image):
 
 
 def convert_01_to_255(image, data_format):
-    return np.clip(to_nhwc(image * 255, data_format), 0, 255)
+    return np.clip(image * 255, 0, 255)
 
 
 def slerp(val, low, high):
@@ -146,6 +144,7 @@ class Trainer(object):
 
         self.z_dim = config.z_dim
         self.num_conv_filters = config.num_conv_filters
+        self.filter_size = config.filter_size
 
         self.model_dir = config.model_dir
         self.load_path = config.load_path
@@ -154,9 +153,11 @@ class Trainer(object):
         self.data_format = config.data_format
 
         _, self.height, self.width, self.channel = \
-                get_conv_shape(self.data_loader, self.data_format)
+            get_conv_shape(self.data_loader, self.data_format)
         self.scale_size = self.height 
-        self.repeat_num = int(np.log2(self.height)) - 2  # 2 --> 1 for 28x28 mnist.
+        # Convolutions from 64 down to 4, so 2^(6-2) = 2^4,
+        # where last one is separated out, so 3 repeated convolutions.
+        self.repeat_num = int(np.log2(self.height)) - 3
 
         self.start_step = 0
         self.log_step = config.log_step
@@ -197,26 +198,28 @@ class Trainer(object):
         self.to_encode_readonly = tf.placeholder(tf.float32,
             name='to_encode_readonly',
             shape=[None, self.scale_size, self.scale_size, self.channel])
-        to_enc = nhwc_to_nchw(convert_255_to_n11(self.to_encode_readonly), is_tf=True)
+        #to_enc = nhwc_to_nchw(convert_255_to_n11(self.to_encode_readonly), is_tf=True)
+        to_enc = convert_255_to_n11(self.to_encode_readonly)
         _, self.encoded_readonly, _, _ = AutoencoderCNN(
             to_enc, self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.data_format, reuse=True)
+            self.num_conv_filters, self.filter_size, self.data_format,
+            reuse=True)
 
         # Decode.
         self.to_decode_readonly = tf.placeholder(tf.float32,
             shape=[None, self.z_dim], name='to_decode_readonly',)
         self.decoded_readonly, _, _, _ = AutoencoderCNN(
             to_enc, self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.data_format, reuse=True,
-            to_decode=self.to_decode_readonly)
+            self.num_conv_filters, self.filter_size, self.data_format,
+            reuse=True, to_decode=self.to_decode_readonly)
 
         # Generate.
         self.z_read = tf.placeholder(tf.float32, shape=[None, self.z_dim],
             name='z_read',)
         g_read, _ = GeneratorCNN(
-            self.z_read, self.num_conv_filters, self.channel,
+            self.z_read, self.num_conv_filters, self.filter_size, self.channel,
             self.repeat_num, self.data_format, reuse=True)
-        self.g_read = convert_n11_to_255(g_read, self.data_format, is_tf=True)
+        self.g_read = convert_n11_to_255(g_read, is_tf=True)
 
 
     def build_model(self):
@@ -224,7 +227,7 @@ class Trainer(object):
         # Images are NHWC on [0, 255].
         #self.x = tf.placeholder(tf.float32,
         #    [self.batch_size, self.scale_size, self.scale_size, self.channel], name='x')
-        self.x = self.data_loader  # nchw on [0,255]
+        self.x = self.data_loader  # nhwc on [0,255]
         self.x_predicted_weights = tf.placeholder(tf.float32, [self.batch_size, 1],
             name='x_predicted_weights')
         #x = nhwc_to_nchw(convert_255_to_n11(self.x), is_tf=True)
@@ -233,16 +236,17 @@ class Trainer(object):
 
         # Set up generator and autoencoder functions.
         g, self.g_var = GeneratorCNN(
-            self.z, self.num_conv_filters, self.channel,
+            self.z, self.num_conv_filters, self.filter_size, self.channel,
             self.repeat_num, self.data_format, reuse=False)
         d_out, d_enc, self.d_var_enc, self.d_var_dec = AutoencoderCNN(
             tf.concat([x, g], 0), self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.data_format, reuse=False)
+            self.num_conv_filters, self.filter_size, self.data_format,
+            reuse=False)
         AE_x, AE_g = tf.split(d_out, 2)
         self.x_enc, self.g_enc = tf.split(d_enc, 2)
-        self.g = convert_n11_to_255(g, self.data_format, is_tf=True)
-        self.AE_g = convert_n11_to_255(AE_g, self.data_format, is_tf=True)
-        self.AE_x = convert_n11_to_255(AE_x, self.data_format, is_tf=True)
+        self.g = convert_n11_to_255(g, is_tf=True)
+        self.AE_g = convert_n11_to_255(AE_g, is_tf=True)
+        self.AE_x = convert_n11_to_255(AE_x, is_tf=True)
 
         self.build_real_only()
 
@@ -252,8 +256,8 @@ class Trainer(object):
             # Kernel on encodings.
             self.xe = self.x_enc 
             self.ge = self.g_enc 
-            #sigma_list = [1., 2., 4., 8., 16.]
-            sigma_list = [1.]
+            sigma_list = [1., 2., 4., 8., 16.]
+            #sigma_list = [0.1, 1., 10.]
         else:
             # Kernel on full imgs.
             self.xe = tf.reshape(x, [tf.shape(x)[0], -1]) 
@@ -350,39 +354,43 @@ class Trainer(object):
             g_opt = tf.train.GradientDescentOptimizer(self.g_lr)
 
 
-        # Set up optim nodes. Clip encoder only! 
+        # Set up optim nodes.
         if 1:
-            enc_grads_, enc_vars_ = zip(*ae_opt.compute_gradients(
-                self.ae_loss_real, var_list=self.d_var_enc))
-            dec_grads_, dec_vars_ = zip(*ae_opt.compute_gradients(
-                self.ae_loss_real, var_list=self.d_var_dec))
-            enc_grads_clipped_ = tuple(
-                [tf.clip_by_value(g, -0.01, 0.01) for g in enc_grads_])
-            ae_grads_ = enc_grads_clipped_ + dec_grads_
-            ae_vars_ = enc_vars_ + dec_vars_
-            self.ae_optim = ae_opt.apply_gradients(zip(ae_grads_, ae_vars_))
-
+            # CLIP ENCODER GRADIENTS.
+            # Separately fetch encoder and decoder vars.
             enc_grads, enc_vars = zip(*d_opt.compute_gradients(
                 self.d_loss, var_list=self.d_var_enc))
             dec_grads, dec_vars = zip(*d_opt.compute_gradients(
                 self.d_loss, var_list=self.d_var_dec))
+            # Clip encoder gradients.
             enc_grads_clipped = tuple(
                 [tf.clip_by_value(g, -0.01, 0.01) for g in enc_grads])
+            # Reassemble list of gradients, and list of vars.
             d_grads = enc_grads_clipped + dec_grads
             d_vars = enc_vars + dec_vars
             self.d_optim = d_opt.apply_gradients(zip(d_grads, d_vars))
+
+            # CLIP MMD GRADIENTS.
+            mmd_grads, mmd_vars = zip(*g_opt.compute_gradients(
+                self.g_loss, var_list=self.g_var))
+            mmd_grads_clipped = tuple(
+                [tf.clip_by_value(g, -0.01, 0.01) for g in mmd_grads])
+            self.g_optim = g_opt.apply_gradients(zip(
+                mmd_grads_clipped, mmd_vars))
+
         else:
             ae_vars = self.d_var_enc + self.d_var_dec
             self.ae_optim = ae_opt.minimize(self.ae_loss_real, var_list=ae_vars)
+
             self.d_optim = d_opt.minimize(self.d_loss, var_list=ae_vars)
-        self.g_optim = g_opt.minimize(
-            self.g_loss, var_list=self.g_var, global_step=self.step)
+
+            self.g_optim = g_opt.minimize(
+                self.g_loss, var_list=self.g_var, global_step=self.step)
 
         self.summary_op = tf.summary.merge([
             tf.summary.image("a_g", self.g, max_outputs=10),
             tf.summary.image("b_AE_g", self.AE_g, max_outputs=10),
-            tf.summary.image("c_x", to_nhwc(self.x, 'NCHW', is_tf=True),
-                max_outputs=10),
+            tf.summary.image("c_x", self.x, max_outputs=10),
             tf.summary.image("d_AE_x", self.AE_x, max_outputs=10),
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
@@ -401,13 +409,15 @@ class Trainer(object):
         self.w_weights = tf.placeholder(tf.float32, [None, 1], name='w_weights')
 
         # Convert NHWC [0, 255] to NCHW [-1, 1] for autoencoder.
-        w_images_for_ae = convert_255_to_n11(nhwc_to_nchw(self.w_images, is_tf=True))
+        #w_images_for_ae = convert_255_to_n11(nhwc_to_nchw(self.w_images, is_tf=True))
+        w_images_for_ae = convert_255_to_n11(self.w_images)
         _, w_enc, _, _ = AutoencoderCNN(
             w_images_for_ae, self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.data_format, reuse=True)
+            self.num_conv_filters, self.filter_size, self.data_format,
+            reuse=True)
 
         self.dropout_pr = tf.placeholder(tf.float32, name='dropout_pr')
-        self.w_pred, self.w_vars = mnist_enc_NN_predict_weights(
+        self.w_pred, self.w_vars = predict_weights_from_enc(
             w_enc, self.dropout_pr, reuse=False)
         self.w_loss = tf.reduce_mean(tf.squared_difference(self.w_weights, self.w_pred))
 
@@ -486,7 +496,7 @@ class Trainer(object):
             # Reshape, rescale, recode.
             images = np.reshape(images,
                 [len(images), self.scale_size, self.scale_size, self.channel])
-            images = convert_01_to_255(images, data_format='NWHC')
+            images = convert_01_to_255(images)
             return images
 
         m = self.mnist
@@ -536,7 +546,7 @@ class Trainer(object):
 
         # Interpolate between two random encodings.
         #two_random_images = self.get_n_images(2, self.images_train)
-        two_random_images = to_nhwc(batch_train[:2], 'NCHW')
+        two_random_images = batch_train[:2]
         im1 = two_random_images[:1, :, :, :]  # This notation keeps dims.
         im2 = two_random_images[1:, :, :, :]
         z1 = self.encode(im1)
@@ -557,7 +567,7 @@ class Trainer(object):
         # Get data and their predicted weights, and sort images by weight.
         #num_to_save = 64  # NOTE: Best if this is a square.
         #data = self.get_n_images(num_to_save, self.images_train)
-        data = to_nhwc(batch_train, 'NCHW')
+        data = batch_train
         data_weights = self.predict_weights(data).flatten()
         data_sorted = data[np.argsort(data_weights)]
 
@@ -578,7 +588,7 @@ class Trainer(object):
         # Get upsample weights for data.
         #num_to_lineplot = 100
         #d = self.get_n_images(num_to_lineplot, self.images_train)
-        d = to_nhwc(batch_train, 'NCHW')
+        d = batch_train
         d_weights = self.predict_weights(d).flatten()
         d_weights_up = []
         for weight in d_weights:
@@ -696,8 +706,7 @@ class Trainer(object):
             # For MMDGAN training, use data with predicted weights.
             #batch_train = self.get_n_images(self.batch_size, self.images_train)
             batch_train = self.sess.run(self.x)
-            batch_train_weights = self.predict_weights(
-                to_nhwc(batch_train, 'NCHW'))
+            batch_train_weights = self.predict_weights(batch_train)
 
             # Run full training step on pre-fetched data and simulations.
             result = self.sess.run(fetch_dict,
@@ -727,7 +736,7 @@ class Trainer(object):
                 # First save a sample.
                 if step == 0:
                     #x_samp = self.get_n_images(1, self.images_train)
-                    x_samp = to_nhwc(batch_train[:1], 'NCHW')  # This indexing keeps dims.
+                    x_samp = batch_train[:1]  # This indexing keeps dims.
                     save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
 
                 # Save images for fixed and random z.

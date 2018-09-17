@@ -76,6 +76,7 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
 
     return tf.to_float(queue)
 
+
 def load_user(data_path, scale_size, data_format):
     user_path = os.path.join(data_path, 'splits', 'user')
     if not os.path.exists(user_path):
@@ -84,5 +85,6 @@ def load_user(data_path, scale_size, data_format):
     paths = glob("{}/*.{}".format(user_path, 'jpg'))
     assert len(paths) > 0, 'Did not find paths.'
     user_imgs = np.array([np.array(Image.open(path)) for path in paths])
+    assert data_format == 'NHWC', 'data_format should be NHWC'
     return user_imgs 
 

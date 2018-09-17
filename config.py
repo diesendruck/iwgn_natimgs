@@ -14,12 +14,14 @@ def add_argument_group(name):
 
 # Network
 net_arg = add_argument_group('Network')
-net_arg.add_argument('--scale_size', type=int, default=64, choices=[32, 64],
+net_arg.add_argument('--scale_size', type=int, default=64, choices=[32, 64, 128],
     help=('input image will be resized with the given value '
         'as width and height'))
 net_arg.add_argument('--num_conv_filters', type=int, default=64,
-    choices=[2, 4, 6, 8, 16, 32, 64, 128],
+    choices=[2, 4, 6, 8, 16, 32, 64, 128, 256, 512, 1024],
     help='n in the paper')
+net_arg.add_argument('--filter_size', type=int, default=4,
+    choices=[3, 4, 5], help='square dim of convolution filter')
 net_arg.add_argument('--z_dim', type=int, default=64,
     choices=[1, 2, 3, 4, 5, 6, 10, 16, 32, 64, 128],
     help='Dimension of hidden layer in autoencoder.')
@@ -75,9 +77,10 @@ misc_arg.add_argument('--random_seed', type=int, default=123)
 
 def get_config():
     config, unparsed = parser.parse_known_args()
-    if config.use_gpu:
-        data_format = 'NCHW'
-    else:
-        data_format = 'NHWC'
+    #if config.use_gpu:
+    #    data_format = 'NCHW'
+    #else:
+    #    data_format = 'NHWC'
+    data_format = 'NHWC'
     setattr(config, 'data_format', data_format)
     return config, unparsed
