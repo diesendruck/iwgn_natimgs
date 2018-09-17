@@ -127,7 +127,7 @@ class Trainer(object):
         self.batch_size = config.batch_size
         self.use_mmd= config.use_mmd
         self.lambda_mmd_setting = config.lambda_mmd_setting
-        self.weighted = config.weighted
+        self.weighted_setting = config.weighted
 
         self.step = tf.Variable(0, name='step', trainable=False)
 
@@ -252,7 +252,8 @@ class Trainer(object):
             # Kernel on encodings.
             self.xe = self.x_enc 
             self.ge = self.g_enc 
-            sigma_list = [1., 2., 4., 8., 16.]
+            #sigma_list = [1., 2., 4., 8., 16.]
+            sigma_list = [1.]
         else:
             # Kernel on full imgs.
             self.xe = tf.reshape(x, [tf.shape(x)[0], -1]) 
@@ -676,7 +677,7 @@ class Trainer(object):
                 feed_dict={
                     self.w_images: batch_user,
                     self.w_weights: batch_user_weights,
-                    self.dropout_pr: 0.5})
+                    self.dropout_pr: 0.9})
 
             # Set up basket of items to be run. Occasionally fetch items
             # useful for logging and saving.
@@ -706,7 +707,7 @@ class Trainer(object):
                     self.lambda_mmd: self.lambda_mmd_setting, 
                     self.lambda_ae: 1.0,
                     self.dropout_pr: 1.0,
-                    self.weighted: True})
+                    self.weighted: self.weighted_setting})
 
             if step % self.lr_update_step == self.lr_update_step - 1:
                 self.sess.run([self.g_lr_update, self.d_lr_update])
