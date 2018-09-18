@@ -11,8 +11,8 @@ from utils import prepare_dirs_and_logger, save_config
 
 def main(config):
     # NOTE: Run this in shell first.
-    if tf.__version__[:3] != '1.1':
-        sys.exit('***NOTE!***: FIRST RUN:\n"source ~/began/BEGAN-tensorflow/tf1.1/bin/activate"')
+    #if tf.__version__[:3] != '1.1':
+    #    sys.exit('***NOTE!***: FIRST RUN:\n"source ~/began/BEGAN-tensorflow/tf1.1/bin/activate"')
     # NOTE: Other setup requirements.
     print('\nREQUIREMENTS:\n  1. The file "user_weights.npy" should '
         'contain the user-provided labels for images in /user_images.\n')

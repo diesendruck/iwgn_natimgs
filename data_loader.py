@@ -45,6 +45,10 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
     reader = tf.WholeFileReader()
     filename, data = reader.read(filename_queue)
     image = tf_decode(data, channels=channels)
+    # Test standardization here. 
+    # Alternatively, do standardization in trainer_iwgn.py.
+    image = tf.image.random_flip_left_right(image)
+    image = tf.image.per_image_standardization(image)
 
     if is_grayscale:
         image = tf.image.rgb_to_grayscale(image)

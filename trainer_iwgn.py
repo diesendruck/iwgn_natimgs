@@ -104,7 +104,7 @@ def sort_and_scale(arr):
     assert len(arr.shape) == 1, 'Array must be one-dimensional.'
     left_bounded_at_zero = arr - np.min(arr) 
     sorted_arr = np.sort(left_bounded_at_zero)
-    sorted_and_scaled_zero_to_one = sorted_arr / np.max(sorted_arr)
+    sorted_and_scaled_zero_to_one = sorted_arr / (np.max(sorted_arr) + 1e-7)
     return sorted_and_scaled_zero_to_one
 
 class Trainer(object):
@@ -199,7 +199,8 @@ class Trainer(object):
             name='to_encode_readonly',
             shape=[None, self.scale_size, self.scale_size, self.channel])
         #to_enc = nhwc_to_nchw(convert_255_to_n11(self.to_encode_readonly), is_tf=True)
-        to_enc = convert_255_to_n11(self.to_encode_readonly)
+        #to_enc = convert_255_to_n11(self.to_encode_readonly)
+        to_enc = self.to_encode_readonly
         _, self.encoded_readonly, _, _ = AutoencoderCNN(
             to_enc, self.channel, self.z_dim, self.repeat_num,
             self.num_conv_filters, self.filter_size, self.data_format,
@@ -231,7 +232,8 @@ class Trainer(object):
         self.x_predicted_weights = tf.placeholder(tf.float32, [self.batch_size, 1],
             name='x_predicted_weights')
         #x = nhwc_to_nchw(convert_255_to_n11(self.x), is_tf=True)
-        x = convert_255_to_n11(self.x)
+        #x = convert_255_to_n11(self.x)
+        x = self.x
         self.weighted = tf.placeholder(tf.bool, name='weighted')
 
         # Set up generator and autoencoder functions.
@@ -410,7 +412,8 @@ class Trainer(object):
 
         # Convert NHWC [0, 255] to NCHW [-1, 1] for autoencoder.
         #w_images_for_ae = convert_255_to_n11(nhwc_to_nchw(self.w_images, is_tf=True))
-        w_images_for_ae = convert_255_to_n11(self.w_images)
+        #w_images_for_ae = convert_255_to_n11(self.w_images)
+        w_images_for_ae = self.w_images
         _, w_enc, _, _ = AutoencoderCNN(
             w_images_for_ae, self.channel, self.z_dim, self.repeat_num,
             self.num_conv_filters, self.filter_size, self.data_format,
@@ -695,6 +698,17 @@ class Trainer(object):
                 'd_optim': self.d_optim,
                 'g_optim': self.g_optim,
             }
+            if step < 25 or step % 500 == 0:
+                # 100 d_optim for 1 g_optim
+                for i in range(1, 100):
+                    fetch_dict.update({
+                        'd_optim{}'.format(i): self.d_optim})
+            else:
+                # 5 d_optim for 1 g_optim
+                for i in range(1, 5):
+                    fetch_dict.update({
+                        'd_optim{}'.format(i): self.d_optim})
+
             if step % self.log_step == 0:
                 fetch_dict.update({
                     'summary': self.summary_op,
