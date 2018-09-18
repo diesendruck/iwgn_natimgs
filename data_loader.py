@@ -39,6 +39,7 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
         
         if len(paths) != 0:
             break
+    assert len(paths) > 0, 'did not find paths'
 
     filename_queue = tf.train.string_input_producer(list(paths), shuffle=False, seed=seed)
     reader = tf.WholeFileReader()
@@ -49,6 +50,7 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
     with Image.open(paths[0]) as img:
         w, h = img.size
         shape = [h, w, channels]
+        # TODO: Sort out why shape is not [64, 64, 3]
 
     if grayscale:
         image = tf.image.rgb_to_grayscale(image)

@@ -83,7 +83,7 @@ for _id in id_info.keys():
     # 2. Get number of cols to pad.
     img = img[:h, :w]
     num_padding_cols = abs(h - w)
-    # 3. Apply padding cols and save.
+    # 3. Apply padding.
     if pad == 'pad_width':
         pad_cols = np.zeros((h, num_padding_cols/2, 3))
         try:
@@ -101,9 +101,9 @@ for _id in id_info.keys():
     elif pad == 'none':
         pass
     
-    # Save processed image.
+    # Resize and save processed image.
     assert img.shape[0] == img.shape[1], 'image not square'
-    img = Image.fromarray(np.uint8(img))
+    img = Image.fromarray(np.uint8(img)).resize((64, 64), Image.NEAREST)
     img.save(os.path.join(cwd, 'images_preprocessed', filename))
 
     
@@ -114,6 +114,7 @@ do
 cp $file ../train 
 done
 
+(from train)
 for file in $(ls -p | grep -v / | head -200)
 do
 cp $file ../user 
