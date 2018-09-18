@@ -39,14 +39,11 @@ def main(config):
 
     data_loader = get_loader(
         data_path, config.batch_size, config.scale_size,
-        config.data_format, 'train')
-    data_loader_target = get_loader(
-        data_path, config.batch_size, config.scale_size,
-        config.data_format, 'test')
-    images_user = load_user(data_path, config.scale_size, config.data_format)
+        config.data_format, split_name='train', grayscale=config.grayscale)
+    images_user = load_user(config.dataset, data_path, config.scale_size, config.data_format,
+        grayscale=config.grayscale)
     images_user_weights = np.load('user_weights.npy')
-    trainer = Trainer(config, data_loader, data_loader_target,
-        images_user, images_user_weights)
+    trainer = Trainer(config, data_loader, images_user, images_user_weights)
 
     if config.is_train:
         save_config(config)

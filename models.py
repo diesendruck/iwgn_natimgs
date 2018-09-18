@@ -9,16 +9,23 @@ def leaky_relu(x, name=None):
     return tf.maximum(x, 0.2*x, name=name)
 
 
-def GeneratorCNN(z, num_filters, filter_size, channels_out, repeat_num,
-        data_format, reuse):
+def GeneratorCNN(z, base_size, num_filters, filter_size, channels_out, repeat_num,
+        data_format, reuse, verbose=False):
     """Maps (batch_size, z_dim) to (batch_size, 4, 4, num_filters) to
      (batch_size, scale_size, scale_size, 3).
     """
+    if verbose:
+        print('\n\nGENERATOR ARCHITECTURE\n')
+        print(z)
     act = leaky_relu
     with tf.variable_scope("G", reuse=reuse) as vs:
-        num_output = int(np.prod([4, 4, num_filters]))
+        num_output = int(np.prod([base_size, base_size, num_filters]))
         x = layers.dense(z, num_output)
-        x = tf.reshape(x, [-1, 4, 4, num_filters])
+        if verbose:
+            print(x)
+        x = tf.reshape(x, [-1, base_size, base_size, num_filters])
+        if verbose:
+            print(x)
         
         for idx in range(repeat_num):
             num_filters /= 2
@@ -26,21 +33,26 @@ def GeneratorCNN(z, num_filters, filter_size, channels_out, repeat_num,
                 padding='same', use_bias=False, activation=None)
             x = layers.batch_normalization(x)
             x = act(x)
+            if verbose:
+                print(x)
 
         out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
             padding='same', use_bias=False, activation=tf.nn.tanh)
+        if verbose:
+            print(out)
 
     variables = tf.contrib.framework.get_variables(vs)
     return out, variables
 
 
-def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
-        filter_size, data_format, reuse, to_decode=None):
+def AutoencoderCNN(x, base_size, input_channel, z_num, repeat_num, num_filters,
+        filter_size, data_format, reuse, to_decode=None, verbose=False):
     """Maps (batch_size, scale_size, scale_size, 3) to 
       (batch_size, 4, 4, num_filters) to (batch_size, z_dim), and reverse.
     """
-    verbose = False 
+    verbose = True 
     if verbose:
+        print('\n\nAUTOENCODER ARCHITECTURE\n')
         print(x)
     log2_num_filter = int(np.log2(num_filters))
     act = leaky_relu
@@ -60,7 +72,9 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         x = tf.reshape(x, [-1, final_conv_flat_dim])
         if verbose:
             print(x)
-        z = x = layers.dense(x, z_num)
+        hidden = layers.dense(x, z_num)
+        #z = x = layers.batch_normalization(hidden) 
+        z = x = tf.nn.tanh(hidden) 
         if verbose:
             print(x)
         if to_decode is not None:
@@ -71,7 +85,7 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         x = layers.dense(x, final_conv_flat_dim)
         if verbose:
             print(x)
-        x = tf.reshape(x, [-1, 4, 4, num_filters])
+        x = tf.reshape(x, [-1, base_size, base_size, num_filters])
         if verbose:
             print(x)
         
@@ -88,7 +102,6 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
             padding='same', use_bias=False, activation=tf.nn.tanh)
         if verbose:
             print(out)
-            pdb.set_trace()
 
     variables_enc = tf.contrib.framework.get_variables(vs_enc)
     variables_dec = tf.contrib.framework.get_variables(vs_dec)
