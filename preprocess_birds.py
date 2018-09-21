@@ -71,39 +71,59 @@ for _id in id_info.keys():
     # 1. Get type of padding (width, heigh, none). Trim if pad dim is odd.
     img = np.array(img)
     h, w = img.shape[0], img.shape[1]
-    if h > w:
-        pad = 'pad_width'
-    elif w > h:
-        pad = 'pad_height'
-    elif h == w:
-        pad = 'none'
     dim_diff = abs(h - w)
     if dim_diff % 2 != 0:
         h -= 1
+    if h > w:
+        orientation = 'tall'
+    elif w > h:
+        orientation = 'wide'
+    elif h == w:
+        orientation = 'square'
     # 2. Get number of cols to pad.
     img = img[:h, :w]
-    num_padding_cols = abs(h - w)
+    pad_dim = abs(h - w)
     # 3. Apply padding.
-    if pad == 'pad_width':
-        pad_cols = np.zeros((h, num_padding_cols/2, 3))
-        try:
-            img = np.concatenate((pad_cols, img, pad_cols) , axis=1)
-        except:
-            print('Skipped {} - {}'.format(_id, filename))
-            continue
-    elif pad == 'pad_height':
-        pad_rows = np.zeros((num_padding_cols/2, w, 3))
-        try:
-            img = np.concatenate((pad_rows, img, pad_rows) , axis=0)
-        except:
-            print('Skipped {} - {}'.format(_id, filename))
-            continue
-    elif pad == 'none':
-        pass
+    do_padding = False
+    do_trimming = True
+    if do_padding and orientation != 'square':
+        if orientation == 'tall':
+            # Add padding columns on left and right.
+            pad_cols = np.zeros((h, pad_dim/2, 3))
+            try:
+                img = np.concatenate((pad_cols, img, pad_cols) , axis=1)
+            except:
+                print('Skipped {} - {}'.format(_id, filename))
+                continue
+        elif orientation == 'wide':
+            # Add padding rows on top and bottom.
+            pad_rows = np.zeros((pad_dim/2, w, 3))
+            try:
+                img = np.concatenate((pad_rows, img, pad_rows) , axis=0)
+            except:
+                print('Skipped {} - {}'.format(_id, filename))
+                continue
+        elif orientation == 'square':
+            pass
+    elif do_trimming and orientation != 'square':
+        if orientation == 'tall':
+            # Trim rows at top and bottom.
+            try:
+                img = img[pad_dim/2:-pad_dim/2, :]
+            except:
+                print('Skipped {} - {}'.format(_id, filename))
+                continue
+        elif orientation == 'wide':
+            # Trim columns at left and right.
+            try:
+                img = img[:, pad_dim/2:-pad_dim/2]
+            except:
+                print('Skipped {} - {}'.format(_id, filename))
+                continue
     
     # Resize and save processed image.
     assert img.shape[0] == img.shape[1], 'image not square'
-    img = Image.fromarray(np.uint8(img)).resize((64, 64), Image.NEAREST)
+    img = Image.fromarray(np.uint8(img)).resize((64, 64), Image.BICUBIC)
     img.save(os.path.join(cwd, 'images_preprocessed', filename))
 
     

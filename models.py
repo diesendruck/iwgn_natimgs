@@ -5,19 +5,36 @@ slim = tf.contrib.slim
 layers = tf.layers
 
 
-def leaky_relu(x, name=None):
-    return tf.maximum(x, 0.2*x, name=name)
+def activation_choice(x, name=None):
+    #return tf.maximum(x, 0.2*x, name=name)  # Leaky RELU.
+    #return tf.minimum(tf.nn.elu(x, name=name), 2)
+    return tf.nn.elu(x, name=name)
+    #return tf.nn.relu6(x, name=name)
+
+
+def conv2d_bn_act(x, num_filters, filter_size, use_bias=False):
+    x = layers.conv2d(x, num_filters, filter_size, strides=1, padding='same',
+            use_bias=use_bias, activation=None)
+    x = layers.batch_normalization(x)
+    x = activation_choice(x)
+    return x
+
+
+def resize(x, new_size):
+    new_dims = tf.convert_to_tensor([new_size, new_size])
+    x = tf.image.resize_nearest_neighbor(x, new_dims)
+    return x, new_size
 
 
 def GeneratorCNN(z, base_size, num_filters, filter_size, channels_out, repeat_num,
-        data_format, reuse, verbose=False):
-    """Maps (batch_size, z_dim) to (batch_size, 4, 4, num_filters) to
-     (batch_size, scale_size, scale_size, 3).
+        data_format, reuse, use_bias=False, verbose=False):
+    """Maps (batch_size, z_dim) to (batch_size, base_size, base_size, num_filters) to
+       (batch_size, scale_size, scale_size, 3).
+       Output is on [-1,1].
     """
     if verbose:
         print('\n\nGENERATOR ARCHITECTURE\n')
         print(z)
-    act = leaky_relu
     with tf.variable_scope("G", reuse=reuse) as vs:
         num_output = int(np.prod([base_size, base_size, num_filters]))
         x = layers.dense(z, num_output)
@@ -27,17 +44,28 @@ def GeneratorCNN(z, base_size, num_filters, filter_size, channels_out, repeat_nu
         if verbose:
             print(x)
         
+        current_dim = base_size
+        current_num_filters = num_filters
         for idx in range(repeat_num):
-            num_filters /= 2
-            x = layers.conv2d_transpose(x, num_filters, filter_size, 2,
-                padding='same', use_bias=False, activation=None)
-            x = layers.batch_normalization(x)
-            x = act(x)
+            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
+            x, current_dim = resize(x, 2 * current_dim)
+            current_num_filters /= 2
+
+            #num_filters /= 2
+            #x = layers.conv2d_transpose(x, num_filters, filter_size, 2,
+            #    padding='same', use_bias=False, activation=None)
+            #x = layers.batch_normalization(x)
+            #x = act(x)
             if verbose:
                 print(x)
 
-        out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
-            padding='same', use_bias=False, activation=tf.nn.tanh)
+        x = layers.conv2d(x, channels_out, filter_size, 1,
+            padding='same', use_bias=use_bias, activation=None)
+        x = tf.nn.tanh(x)
+        out, _ = resize(x, 2 * current_dim)
+
+        #out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
+        #    padding='same', use_bias=False, activation=tf.nn.tanh)
         if verbose:
             print(out)
 
@@ -45,26 +73,34 @@ def GeneratorCNN(z, base_size, num_filters, filter_size, channels_out, repeat_nu
     return out, variables
 
 
-def AutoencoderCNN(x, base_size, input_channel, z_num, repeat_num, num_filters,
-        filter_size, data_format, reuse, to_decode=None, verbose=False):
+def AutoencoderCNN(x, base_size, scale_size, input_channel, z_num, repeat_num,
+        num_filters, filter_size, data_format, reuse, to_decode=None,
+        use_bias=False, verbose=False):
     """Maps (batch_size, scale_size, scale_size, 3) to 
-      (batch_size, 4, 4, num_filters) to (batch_size, z_dim), and reverse.
+      (batch_size, base_size, base_size, num_filters) to (batch_size, z_dim),
+      and reverse.
     """
     verbose = True 
     if verbose:
         print('\n\nAUTOENCODER ARCHITECTURE\n')
         print(x)
-    log2_num_filter = int(np.log2(num_filters))
-    act = leaky_relu
+
     channels_out = x.shape.as_list()[-1]
+    current_num_filters = 2 ** (int(np.log2(num_filters)) - repeat_num)
+
     with tf.variable_scope("ae_enc", reuse=reuse) as vs_enc:
         # Encoder
+        current_dim = scale_size
         for idx in range(repeat_num + 1):
-            channel_num = 2 ** (log2_num_filter - repeat_num + idx)
-            x = layers.conv2d(x, channel_num, filter_size, 2,
-                padding='same', use_bias=False, activation=None)
-            x = layers.batch_normalization(x)
-            x = act(x, name='act{}'.format(idx))
+            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
+            x, current_dim = resize(x, current_dim / 2)
+            current_num_filters *= 2
+
+            #channel_num = 2 ** (log2_num_filter - repeat_num + idx)
+            #x = layers.conv2d(x, channel_num, filter_size, 2,
+            #    padding='same', use_bias=False, activation=None)
+            #x = layers.batch_normalization(x)
+            #x = act(x, name='act{}'.format(idx))
             if verbose:
                 print(x)
 
@@ -73,8 +109,12 @@ def AutoencoderCNN(x, base_size, input_channel, z_num, repeat_num, num_filters,
         if verbose:
             print(x)
         hidden = layers.dense(x, z_num)
+
+        # Possible restrictions on hidden layer.
         #z = x = layers.batch_normalization(hidden) 
-        z = x = tf.nn.tanh(hidden) 
+        #z = x = tf.nn.tanh(hidden) 
+        z = x = hidden 
+
         if verbose:
             print(x)
         if to_decode is not None:
@@ -89,23 +129,77 @@ def AutoencoderCNN(x, base_size, input_channel, z_num, repeat_num, num_filters,
         if verbose:
             print(x)
         
+        current_dim = base_size
+        current_num_filters = num_filters 
         for idx in range(repeat_num):
-            num_filters /= 2
-            x = layers.conv2d_transpose(x, num_filters, filter_size, 2,
-                padding='same', use_bias=False, activation=None)
-            x = layers.batch_normalization(x)
-            x = act(x)
+            current_num_filters /= 2
+            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
+            x, current_dim = resize(x, 2 * current_dim)
+
+            #num_filters /= 2
+            #x = layers.conv2d_transpose(x, num_filters, filter_size, 2,
+            #    padding='same', use_bias=False, activation=None)
+            #x = layers.batch_normalization(x)
+            #x = act(x)
             if verbose:
                 print(x)
 
-        out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
-            padding='same', use_bias=False, activation=tf.nn.tanh)
+        x = layers.conv2d(x, channels_out, filter_size, 1,
+            padding='same', use_bias=use_bias, activation=None)
+        out, current_dim = resize(x, 2 * current_dim)
+
+        #out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
+        #    padding='same', use_bias=False, activation=tf.nn.tanh)
         if verbose:
             print(out)
 
     variables_enc = tf.contrib.framework.get_variables(vs_enc)
     variables_dec = tf.contrib.framework.get_variables(vs_dec)
     return out, z, variables_enc, variables_dec
+
+
+def DiscriminatorCNN(x, base_size, scale_size, input_channel, repeat_num,
+        num_filters, filter_size, data_format, reuse, to_decode=None,
+        use_bias=False, verbose=False):
+    """Maps (batch_size, scale_size, scale_size, 3) to 
+      (batch_size, base_size, base_size, num_filters) to (batch_size, z_dim),
+      and reverse.
+    """
+    verbose = True 
+    if verbose:
+        print('\n\nDISCRIMINATOR ARCHITECTURE\n')
+        print(x)
+
+    channels_out = x.shape.as_list()[-1]
+    current_num_filters = 2 ** (int(np.log2(num_filters)) - repeat_num)
+
+    with tf.variable_scope("discrim", reuse=reuse) as vs_discrim:
+        # Encoder
+        current_dim = scale_size
+        for idx in range(repeat_num + 1):
+            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
+            x, current_dim = resize(x, current_dim / 2)
+            current_num_filters *= 2
+
+            #channel_num = 2 ** (log2_num_filter - repeat_num + idx)
+            #x = layers.conv2d(x, channel_num, filter_size, 2,
+            #    padding='same', use_bias=False, activation=None)
+            #x = layers.batch_normalization(x)
+            #x = act(x, name='act{}'.format(idx))
+            if verbose:
+                print(x)
+
+        final_conv_flat_dim = np.prod(x.shape.as_list()[1:])
+        x = tf.reshape(x, [-1, final_conv_flat_dim])
+        if verbose:
+            print(x)
+        logits = layers.dense(x, 1)
+
+        if verbose:
+            print(logits)
+
+        variables = tf.contrib.framework.get_variables(vs_discrim)
+        return logits, variables 
 
 
 def MMD(data, gen, t_mean, t_cov_inv, sigma=1):
@@ -150,6 +244,7 @@ def MMD(data, gen, t_mean, t_cov_inv, sigma=1):
     Kw_xy = K[:data_num, data_num:] * p1_weights_xy_normed
     mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
            2 * tf.reduce_sum(Kw_xy))
+    return mmd
 
 
 def int_shape(tensor):
@@ -177,16 +272,11 @@ def reshape(x, h, w, c, data_format):
         x = tf.reshape(x, [-1, h, w, c])
     return x
 
-def resize_nearest_neighbor(x, new_size, data_format):
-    if data_format == 'NCHW':
-        x = nchw_to_nhwc(x)
-        x = tf.image.resize_nearest_neighbor(x, new_size)
-        x = nhwc_to_nchw(x)
-    else:
-        x = tf.image.resize_nearest_neighbor(x, new_size)
+def resize_nearest_neighbor(x, new_size):
+    x = tf.image.resize_nearest_neighbor(x, new_size)
     return x
 
-def upscale(x, scale, data_format):
+def resize_(x, scale, data_format):
     _, h, w, _ = get_conv_shape(x, data_format)
     return resize_nearest_neighbor(x, (h*scale, w*scale), data_format)
 
@@ -227,7 +317,7 @@ def predict_weights_from_enc(x, dropout_pr, reuse):
       y_probs: Tensor of shape (N_examples, 2), with values
         equal to the probabilities of classifying the digit into zero/nonzero.
     """
-    act = leaky_relu
+    act = activation_choice
     z_dim = x.get_shape().as_list()[1]
     with tf.variable_scope('mnist_classifier', reuse=reuse) as vs:
         x = slim.fully_connected(x, 1024, activation_fn=act, scope='fc1')

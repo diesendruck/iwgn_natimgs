@@ -123,6 +123,7 @@ class Trainer(object):
         self.batch_size = config.batch_size
         self.use_mmd= config.use_mmd
         self.lambda_mmd_setting = config.lambda_mmd_setting
+        self.lambda_ae_setting = config.lambda_ae_setting
         self.weighted_setting = config.weighted
 
         self.step = tf.Variable(0, name='step', trainable=False)
@@ -143,6 +144,7 @@ class Trainer(object):
         self.z_dim = config.z_dim
         self.num_conv_filters = config.num_conv_filters
         self.filter_size = config.filter_size
+        self.use_bias = config.use_bias
 
         self.model_dir = config.model_dir
         self.load_path = config.load_path
@@ -153,11 +155,11 @@ class Trainer(object):
         _, self.height, self.width, self.channel = \
             get_conv_shape(self.data_loader, self.data_format)
         self.scale_size = self.height 
-        self.base_size = 8
+        self.base_size = config.base_size
         log2_scale_size = int(np.log2(self.scale_size))
         log2_base_size = int(np.log2(self.base_size))
-        # Convolutions from 64 down to base_size 8, so 2^(6-3), or 3 conv2d's.
-        # where last one is separated out, so 2 repeated convolutions.
+        # Convolutions from 64 down to base_size 4, and 2^(6-2), so 4 conv2d's.
+        # where last one is separated out, so 3 repeated convolutions.
         self.repeat_num = log2_scale_size - log2_base_size - 1
 
         self.start_step = 0
@@ -203,17 +205,18 @@ class Trainer(object):
         #to_enc = convert_255_to_n11(self.to_encode_readonly)
         to_enc = self.to_encode_readonly
         _, self.encoded_readonly, _, _ = AutoencoderCNN(
-            to_enc, self.base_size, self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.filter_size, self.data_format,
-            reuse=True)
+            to_enc, self.base_size, self.scale_size, self.channel, self.z_dim,
+            self.repeat_num, self.num_conv_filters, self.filter_size,
+            self.data_format, reuse=True, use_bias=self.use_bias)
 
         # Decode.
         self.to_decode_readonly = tf.placeholder(tf.float32,
             shape=[None, self.z_dim], name='to_decode_readonly',)
         self.decoded_readonly, _, _, _ = AutoencoderCNN(
-            to_enc, self.base_size, self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.filter_size, self.data_format,
-            reuse=True, to_decode=self.to_decode_readonly)
+            to_enc, self.base_size, self.scale_size, self.channel, self.z_dim,
+            self.repeat_num, self.num_conv_filters, self.filter_size,
+            self.data_format, reuse=True, to_decode=self.to_decode_readonly,
+            use_bias=self.use_bias)
 
         # Generate.
         self.z_read = tf.placeholder(tf.float32, shape=[None, self.z_dim],
@@ -221,7 +224,7 @@ class Trainer(object):
         g_read, _ = GeneratorCNN(
             self.z_read, self.base_size, self.num_conv_filters,
             self.filter_size, self.channel, self.repeat_num, self.data_format,
-            reuse=True)
+            reuse=True, use_bias=self.use_bias)
         self.g_read = convert_n11_to_255(g_read, is_tf=True)
 
 
@@ -234,15 +237,16 @@ class Trainer(object):
         x = convert_255_to_n11(self.x)
         self.weighted = tf.placeholder(tf.bool, name='weighted')
 
-        # Set up generator and autoencoder functions.
+        # Set up generator and autoencoder functions. Output g is on [-1,1].
         g, self.g_var = GeneratorCNN(
             self.z, self.base_size, self.num_conv_filters, self.filter_size,
             self.channel, self.repeat_num, self.data_format, reuse=False,
-            verbose=True)
+            use_bias=self.use_bias, verbose=True)
         d_out, d_enc, self.d_var_enc, self.d_var_dec = AutoencoderCNN(
-            tf.concat([x, g], 0), self.base_size, self.channel, self.z_dim,
-            self.repeat_num, self.num_conv_filters, self.filter_size,
-            self.data_format, reuse=False, verbose=True)
+            tf.concat([x, g], 0), self.base_size, self.scale_size, self.channel,
+            self.z_dim, self.repeat_num, self.num_conv_filters,
+            self.filter_size, self.data_format, reuse=False,
+            use_bias=self.use_bias, verbose=True)
         AE_x, AE_g = tf.split(d_out, 2)
         self.x_enc, self.g_enc = tf.split(d_enc, 2)
         self.g = convert_n11_to_255(g, is_tf=True)
@@ -251,14 +255,26 @@ class Trainer(object):
 
         self.build_real_only()
 
+        # Set up discriminator output.
+        D_logits_out, self.D_var = DiscriminatorCNN(
+            tf.concat([x, g], 0), self.base_size, self.scale_size, self.channel,
+            self.repeat_num, self.num_conv_filters, self.filter_size,
+            self.data_format, reuse=False, use_bias=self.use_bias, verbose=True)
+        D_logits_x, D_logits_g = tf.split(D_logits_out, 2)
+        self.D_loss_x = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=D_logits_x, labels=tf.ones_like(D_logits_x)))
+        self.D_loss_g = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=D_logits_g, labels=tf.zeros_like(D_logits_g)))
+
+
         ## BEGIN: MMD DEFINITON
         on_encodings = 1
         if on_encodings:
             # Kernel on encodings.
             self.xe = self.x_enc 
             self.ge = self.g_enc 
-            #sigma_list = [1., 2., 4., 8., 16.]
-            sigma_list = [0.001, 0.01, 0.1, 0.5, 1.]
+            sigma_list = [1., 2., 4., 8., 16.]
+            #sigma_list = [0.001, 0.01, 0.1, 0.5, 1.]
             #sigma_list = [0.1, 0.5, 1.]
         else:
             # Kernel on full imgs.
@@ -304,7 +320,7 @@ class Trainer(object):
         num_combos_xy = tf.to_float(data_num * gen_num)
 
         # Compute and choose between MMD values.
-        self.mmd = tf.cond(
+        self.mmd2 = tf.cond(
             self.weighted,
             lambda: (
                 tf.reduce_sum(Kw_xx_upper) +
@@ -314,11 +330,11 @@ class Trainer(object):
                 tf.reduce_sum(K_xx_upper) / num_combos_xx +
                 tf.reduce_sum(K_yy_upper) / num_combos_yy -
                 2 * tf.reduce_sum(K_xy) / num_combos_xy))
-        self.mmd_weighted = (
+        self.mmd2_weighted = (
             tf.reduce_sum(Kw_xx_upper) +
             tf.reduce_sum(K_yy_upper) / num_combos_yy -
             2 * tf.reduce_sum(Kw_xy))
-        self.mmd_unweighted = (
+        self.mmd2_unweighted = (
             tf.reduce_sum(K_xx_upper) / num_combos_xx +
             tf.reduce_sum(K_yy_upper) / num_combos_yy -
             2 * tf.reduce_sum(K_xy) / num_combos_xy)
@@ -335,8 +351,30 @@ class Trainer(object):
             lambda: tf.reduce_mean(tf.square(AE_x - x)))
         self.ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
         self.ae_loss = self.ae_loss_real + self.ae_loss_fake
-        self.d_loss = self.lambda_ae * self.ae_loss - self.lambda_mmd * self.mmd
-        self.g_loss = self.mmd
+        self.hinge_loss = tf.reduce_mean(tf.nn.relu(1. * 
+            (tf.reduce_mean(self.x_enc, axis=0) - 
+             tf.reduce_mean(self.g_enc, axis=0))))
+        self.hinge_loss = tf.reduce_mean(tf.abs( 
+            (tf.reduce_mean(self.x_enc, axis=0) - 
+             tf.reduce_mean(self.g_enc, axis=0))))
+        if self.dataset == 'mnist':
+            self.d_loss = self.lambda_ae * self.ae_loss - self.lambda_mmd * self.mmd2
+            self.g_loss = self.mmd2
+        elif self.dataset == 'birds':
+            self.d_loss = (self.lambda_ae * self.ae_loss -
+                           self.lambda_mmd * self.mmd2 - 
+                           self.hinge_loss)
+            self.g_loss = self.mmd2 + self.hinge_loss
+        elif self.dataset == 'celeba':
+            #self.d_loss = (self.lambda_ae * self.ae_loss -
+            #               self.lambda_mmd * self.mmd2 - 
+            #               16. * self.hinge_loss)
+            #self.g_loss = (self.lambda_mmd * self.mmd2 + 
+            #               16. * self.hinge_loss)
+            self.d_loss = (1. * self.ae_loss +
+                           self.D_loss_x - self.D_loss_g -
+                           1. * self.hinge_loss)
+            self.g_loss = self.D_loss_g + 1. * self.hinge_loss
 
         # Optimizer nodes.
         if self.optimizer == 'adam':
@@ -354,7 +392,8 @@ class Trainer(object):
 
 
         # Set up optim nodes.
-        if 1:
+        clip = 0
+        if clip:
             # CLIP ENCODER GRADIENTS.
             # Separately fetch encoder and decoder vars.
             enc_grads, enc_vars = zip(*d_opt.compute_gradients(
@@ -384,9 +423,7 @@ class Trainer(object):
         else:
             ae_vars = self.d_var_enc + self.d_var_dec
             self.ae_optim = ae_opt.minimize(self.ae_loss_real, var_list=ae_vars)
-
             self.d_optim = d_opt.minimize(self.d_loss, var_list=ae_vars)
-
             self.g_optim = g_opt.minimize(
                 self.g_loss, var_list=self.g_var, global_step=self.step)
 
@@ -398,8 +435,8 @@ class Trainer(object):
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
-            tf.summary.scalar("loss/mmd_u", self.mmd_unweighted),
-            tf.summary.scalar("loss/mmd_w", self.mmd_weighted),
+            tf.summary.scalar("loss/mmd2_u", self.mmd2_unweighted),
+            tf.summary.scalar("loss/mmd2_w", self.mmd2_weighted),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
         ])
@@ -416,9 +453,10 @@ class Trainer(object):
         #w_images_for_ae = convert_255_to_n11(self.w_images)
         w_images_for_ae = self.w_images
         _, w_enc, _, _ = AutoencoderCNN(
-            w_images_for_ae, self.base_size, self.channel, self.z_dim,
-            self.repeat_num, self.num_conv_filters, self.filter_size,
-            self.data_format, reuse=True)
+            w_images_for_ae, self.base_size, self.scale_size, self.channel,
+            self.z_dim, self.repeat_num, self.num_conv_filters,
+            self.filter_size, self.data_format, reuse=True,
+            use_bias=self.use_bias)
 
         self.dropout_pr = tf.placeholder(tf.float32, name='dropout_pr')
         self.w_pred, self.w_vars = predict_weights_from_enc(
@@ -691,7 +729,7 @@ class Trainer(object):
                 'd_optim': self.d_optim,
                 'g_optim': self.g_optim,
             }
-            schedule_optims = False 
+            schedule_optims = True 
             if schedule_optims:
                 if step < 25 or step % 500 == 0:
                     # 100 d_optim for 1 g_optim
@@ -709,7 +747,8 @@ class Trainer(object):
                     'summary': self.summary_op,
                     'ae_loss_real': self.ae_loss_real,
                     'ae_loss_fake': self.ae_loss_fake,
-                    'mmd': self.mmd,
+                    'hinge_loss': self.hinge_loss,
+                    'mmd2': self.mmd2,
                     'x_enc': self.x_enc,
                     'g_enc': self.g_enc,
                 })
@@ -725,7 +764,7 @@ class Trainer(object):
                     self.x: batch_train,
                     self.x_predicted_weights: batch_train_weights,
                     self.lambda_mmd: self.lambda_mmd_setting, 
-                    self.lambda_ae: 1.0,
+                    self.lambda_ae: self.lambda_ae_setting,
                     self.dropout_pr: 1.0,
                     self.weighted: self.weighted_setting})
 
@@ -738,10 +777,12 @@ class Trainer(object):
                 self.summary_writer.flush()
                 ae_loss_real = result['ae_loss_real']
                 ae_loss_fake = result['ae_loss_fake']
-                mmd = result['mmd']
-                print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
-                    'mmd: {:.6f}').format(
-                        step, self.max_step, ae_loss_real, ae_loss_fake, mmd))
+                hinge_loss = result['hinge_loss']
+                mmd2 = result['mmd2']
+                print(('[{}/{}] LOSSES: ae_real/fake: {:.3f}, {:.3f} '
+                    'mmd2: {:.3f}, hinge: {:.3f}').format(
+                        step, self.max_step, ae_loss_real, ae_loss_fake,
+                        mmd2, hinge_loss))
                 # TROUBLESHOOT ENCODING RANGE.
                 x_enc_ = result['x_enc']
                 g_enc_ = result['g_enc']
@@ -767,6 +808,8 @@ class Trainer(object):
                 # Save image of interpolation of z.
                 self.interpolate_z(step, batch_train)
 
+                # TODO: Resolve whether this was creating memory issues, where
+                # batch size appeared to bloat.
                 # Save 100 generated and 100 data, with increasing weight.
-                self.show_sorted_images(step, batch_train)
+                #self.show_sorted_images(step, batch_train)
 

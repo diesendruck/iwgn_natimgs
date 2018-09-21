@@ -25,16 +25,17 @@ net_arg.add_argument('--num_conv_filters', type=int, default=64,
 net_arg.add_argument('--filter_size', type=int, default=4,
     choices=[3, 4, 5], help='square dim of convolution filter')
 net_arg.add_argument('--z_dim', type=int, default=64,
-    choices=[1, 2, 3, 4, 5, 6, 10, 16, 32, 64, 128],
+    choices=[1, 2, 3, 4, 5, 6, 10, 16, 32, 64, 100, 128],
     help='Dimension of hidden layer in autoencoder.')
+net_arg.add_argument('--use_bias', dest='use_bias', action='store_true')
 
 # Data
 data_arg = add_argument_group('Data')
-data_arg.add_argument('--dataset', type=str, default='CelebA',
-                      choices=['CelebA', 'mnist', 'birds'])
+data_arg.add_argument('--dataset', type=str, default='celeba',
+                      choices=['celeba', 'mnist', 'birds'])
 data_arg.add_argument('--split', type=str, default='train')
 data_arg.add_argument('--batch_size', type=int, default=64)
-data_arg.add_argument('--grayscale', type=str2bool, default=False)
+data_arg.add_argument('--grayscale', dest='grayscale', action='store_true')
 data_arg.add_argument('--num_worker', type=int, default=4)
 data_arg.add_argument('--target_num', type=int, default=2000,
                       help=('# of target samples, used to sample target group '
@@ -55,7 +56,8 @@ train_arg.add_argument('--w_lr', type=float, default=0.0001)
 train_arg.add_argument('--lr_lower_boundary', type=float, default=5e-5)
 train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 train_arg.add_argument('--use_mmd', type=str2bool, default=True)
-train_arg.add_argument('--lambda_mmd_setting', type=float, default=100.0)
+train_arg.add_argument('--lambda_mmd_setting', type=float, default=1.0)
+train_arg.add_argument('--lambda_ae_setting', type=float, default=8.0)
 train_arg.add_argument('--weighted', type=str2bool, default=True)
 
 # Misc
