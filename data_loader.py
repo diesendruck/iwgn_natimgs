@@ -1,11 +1,12 @@
 import numpy as np
 import os
 import pdb
+import sys
 import tensorflow as tf
-from PIL import Image
 from glob import glob
-
-from trainer_iwgn import nhwc_to_nchw
+from PIL import Image
+sys.path.append('/home/maurice/global_utils')) 
+from global_utils import natural_sort
 
 
 def get_loader(root, batch_size, scale_size, data_format, split_name=None,
@@ -82,7 +83,21 @@ def load_user(dataset, data_path, scale_size, data_format, grayscale=False):
     user_path = os.path.join(data_path, 'user')
     assert os.path.exists(user_path), 'user_path does not exist'
         
-    paths = glob("{}/*.{}".format(user_path, 'jpg'))
+    paths_loaded = glob("{}/*.{}".format(user_path, 'jpg'))
+    paths = natural_sort(paths_loaded)
+    pdb.set_trace()
+
+    #resort_to_original_index = 0
+    #if resort_to_original_index:
+    #    paths_loaded_reorder = [paths.index(i) for i in paths_loaded]
+    #    weights_loaded = np.load('user_weights_CELEBA.npy')
+    #    weights_reordered = np.zeros(len(weights_loaded))
+    #    for i in range(len(weights_loaded)):
+    #        #weights_reordered[i] = weights_loaded[paths_loaded_reorder[i]]
+    #        weights_reordered[paths_loaded_reorder[i]] = weights_loaded[i]
+    #    np.save('user_weights_CELEBA_original_index.npy', weights_reordered)
+    #    pdb.set_trace()
+
     assert len(paths) > 0, 'Did not find paths.'
     if dataset == 'mnist':
         grayscale = True

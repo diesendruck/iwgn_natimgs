@@ -8,18 +8,19 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from collections import deque
+import sys
+sys.path.append('/home/maurice/mmd')
+
 from glob import glob
 from itertools import chain
 from PIL import Image
 from scipy.stats import ks_2samp
 from tqdm import trange
 
-from models import *
-from utils import save_image
 from data_loader import get_loader
-# For MNIST classifier
-#from tensorflow.examples.tutorials.mnist import input_data
+from models import *
+from mmd_utils import MMD_vs_Normal_by_filter
+from utils import save_image
 
 np.random.seed(123)
 
@@ -273,8 +274,10 @@ class Trainer(object):
             # Kernel on encodings.
             self.xe = self.x_enc 
             self.ge = self.g_enc 
-            sigma_list = [1., 2., 4., 8., 16.]
+            #sigma_list = [1., 2., 4., 8., 16.]
+            sigma_list = [0.001, 0.01, 0.1, 1., 2.]
             #sigma_list = [0.001, 0.01, 0.1, 0.5, 1.]
+            #sigma_list = [0.1, 0.5, 1., 2., 4., 8.]
             #sigma_list = [0.1, 0.5, 1.]
         else:
             # Kernel on full imgs.
@@ -340,9 +343,11 @@ class Trainer(object):
             2 * tf.reduce_sum(K_xy) / num_combos_xy)
         ## END: MMD DEFINITON
 
+
         # Define losses.
         self.lambda_mmd = tf.Variable(0., trainable=False, name='lambda_mmd')
         self.lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
+
         self.ae_loss_real = tf.cond(
             self.weighted,
             lambda: (
@@ -351,14 +356,24 @@ class Trainer(object):
             lambda: tf.reduce_mean(tf.square(AE_x - x)))
         self.ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
         self.ae_loss = self.ae_loss_real + self.ae_loss_fake
+
+        # Define loss that restricts norm of encodings.
+        self.enc_norm_loss1 = tf.norm(self.x_enc) #+ tf.norm(self.g_enc)
+        self.enc_norm_loss2 = (
+            MMD_vs_Normal_by_filter(
+                self.x_enc, np.ones([self.batch_size, 1], dtype=np.float32)) )#+
+            #MMD_vs_Normal_by_filter(
+            #    self.g_enc, np.ones([self.batch_size, 1], dtype=np.float32)))
+        self.enc_norm_loss = 0.1 * self.enc_norm_loss1 + 2 * self.enc_norm_loss2
+
+
         self.hinge_loss = tf.reduce_mean(tf.nn.relu(1. * 
             (tf.reduce_mean(self.x_enc, axis=0) - 
              tf.reduce_mean(self.g_enc, axis=0))))
-        self.hinge_loss = tf.reduce_mean(tf.abs( 
-            (tf.reduce_mean(self.x_enc, axis=0) - 
-             tf.reduce_mean(self.g_enc, axis=0))))
+
         if self.dataset == 'mnist':
-            self.d_loss = self.lambda_ae * self.ae_loss - self.lambda_mmd * self.mmd2
+            self.d_loss = (self.lambda_ae * self.ae_loss + self.enc_norm_loss -
+                self.lambda_mmd * self.mmd2) 
             self.g_loss = self.mmd2
         elif self.dataset == 'birds':
             self.d_loss = (self.lambda_ae * self.ae_loss -
@@ -366,15 +381,15 @@ class Trainer(object):
                            self.hinge_loss)
             self.g_loss = self.mmd2 + self.hinge_loss
         elif self.dataset == 'celeba':
-            #self.d_loss = (self.lambda_ae * self.ae_loss -
-            #               self.lambda_mmd * self.mmd2 - 
-            #               16. * self.hinge_loss)
-            #self.g_loss = (self.lambda_mmd * self.mmd2 + 
-            #               16. * self.hinge_loss)
-            self.d_loss = (1. * self.ae_loss +
-                           self.D_loss_x - self.D_loss_g -
-                           1. * self.hinge_loss)
-            self.g_loss = self.D_loss_g + 1. * self.hinge_loss
+            self.d_loss = (self.lambda_ae * self.ae_loss + self.enc_norm_loss -
+                           self.lambda_mmd * self.mmd2 - 
+                           16 * self.hinge_loss)
+            self.g_loss = (self.lambda_mmd * self.mmd2 + 
+                           16 * self.hinge_loss)
+            #self.d_loss = (1. * self.ae_loss +
+            #               self.D_loss_x - self.D_loss_g -
+            #               0. * self.hinge_loss)
+            #self.g_loss = self.D_loss_g + 0. * self.hinge_loss
 
         # Optimizer nodes.
         if self.optimizer == 'adam':
@@ -392,7 +407,7 @@ class Trainer(object):
 
 
         # Set up optim nodes.
-        clip = 0
+        clip = 1
         if clip:
             # CLIP ENCODER GRADIENTS.
             # Separately fetch encoder and decoder vars.
@@ -435,6 +450,9 @@ class Trainer(object):
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
+            tf.summary.scalar("loss/enc_norm_loss1", self.enc_norm_loss1),
+            tf.summary.scalar("loss/enc_norm_loss2", self.enc_norm_loss2),
+            tf.summary.scalar("loss/hinge_loss", self.hinge_loss),
             tf.summary.scalar("loss/mmd2_u", self.mmd2_unweighted),
             tf.summary.scalar("loss/mmd2_w", self.mmd2_weighted),
             tf.summary.scalar("misc/d_lr", self.d_lr),
@@ -707,9 +725,10 @@ class Trainer(object):
         imgs = self.images_user
         save_image(self.images_user, 'user_imgs/user.png'.format(self.model_dir))
         for i in range(len(self.images_user)):
-            im = Image.fromarray(imgs[i][:, :, 0])
+            im = Image.fromarray(imgs[i])
             im = im.convert('RGB')
             im.save('{}/user_{}.png'.format(user_imgs_dir, i))
+        pdb.set_trace()
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
@@ -747,6 +766,9 @@ class Trainer(object):
                     'summary': self.summary_op,
                     'ae_loss_real': self.ae_loss_real,
                     'ae_loss_fake': self.ae_loss_fake,
+                    'enc_norm_loss': self.enc_norm_loss,
+                    'enc_norm_loss1': self.enc_norm_loss1,
+                    'enc_norm_loss2': self.enc_norm_loss2,
                     'hinge_loss': self.hinge_loss,
                     'mmd2': self.mmd2,
                     'x_enc': self.x_enc,
@@ -777,12 +799,15 @@ class Trainer(object):
                 self.summary_writer.flush()
                 ae_loss_real = result['ae_loss_real']
                 ae_loss_fake = result['ae_loss_fake']
+                enc_norm_loss = result['enc_norm_loss']
+                enc_norm_loss1 = result['enc_norm_loss1']
+                enc_norm_loss2 = result['enc_norm_loss2']
                 hinge_loss = result['hinge_loss']
                 mmd2 = result['mmd2']
                 print(('[{}/{}] LOSSES: ae_real/fake: {:.3f}, {:.3f} '
-                    'mmd2: {:.3f}, hinge: {:.3f}').format(
+                    'mmd2: {:.3f}, hinge: {:.3f}, enc_norm: {:.3f} ({:.3f},{:.3f})').format(
                         step, self.max_step, ae_loss_real, ae_loss_fake,
-                        mmd2, hinge_loss))
+                        mmd2, hinge_loss, enc_norm_loss, enc_norm_loss1, enc_norm_loss2))
                 # TROUBLESHOOT ENCODING RANGE.
                 x_enc_ = result['x_enc']
                 g_enc_ = result['g_enc']

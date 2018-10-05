@@ -12,18 +12,60 @@ def activation_choice(x, name=None):
     #return tf.nn.relu6(x, name=name)
 
 
-def conv2d_bn_act(x, num_filters, filter_size, use_bias=False):
-    x = layers.conv2d(x, num_filters, filter_size, strides=1, padding='same',
-            use_bias=use_bias, activation=None)
-    x = layers.batch_normalization(x)
-    x = activation_choice(x)
-    return x
+def conv2d(x_orig, num_filters, filter_size, use_bias=False,
+        batch_resid=False, extra_dense=False, resize_scale=None):
+    if batch_resid:
+        x = layers.conv2d(x_orig, num_filters, filter_size, strides=1,
+            padding='same', use_bias=use_bias, activation=None)
+        x_ = layers.batch_normalization(x)
+        x_ = activation_choice(x_)
+
+        x_ = layers.conv2d(x_, num_filters, filter_size, strides=1,
+            padding='same', use_bias=use_bias, activation=None)
+        x_ = layers.batch_normalization(x_)
+        res = activation_choice(x_)
+
+        out = tf.add(x, res, name='conv_batch_resid')
+
+        if extra_dense:
+            batch_size, current_dim, _, current_num_filters = out.shape.as_list()
+            flat_dim = np.prod([current_dim, current_dim, current_num_filters])
+            x_flat = tf.reshape(out, [-1, flat_dim])
+            x_dense = dense_batch_resid(x_flat, use_bias=use_bias, activation=activation_choice)
+            out = tf.reshape(x_dense, [-1, current_dim, current_dim, current_num_filters]) 
+    else:
+        x = layers.conv2d(x_orig, num_filters, filter_size, strides=1,
+            padding='same', use_bias=use_bias, activation=None)
+        #x = layers.batch_normalization(x)
+        out = activation_choice(x)
+
+    if resize_scale:
+        # Resize convolution.
+        current_dim = out.shape.as_list()[1]
+        out = resize(out, int(resize_scale * current_dim))
+        # Alternatively, strided convolution.
+
+    return out
+
+
+def dense_batch_resid(x, use_bias=False, activation=None):
+    x_dim = x.shape.as_list()[1]
+    x_ = layers.batch_normalization(x)
+    x_ = activation_choice(x_)
+    x_ = layers.dense(x_, x_dim, use_bias=use_bias, activation=None)
+
+    x_ = layers.batch_normalization(x_)
+    x_ = activation_choice(x_)
+    x_ = layers.dense(x_, x_dim, use_bias=use_bias, activation=None)
+
+    r = tf.add(x_, x, name='dense_batch_resid')
+    return r
 
 
 def resize(x, new_size):
     new_dims = tf.convert_to_tensor([new_size, new_size])
     x = tf.image.resize_nearest_neighbor(x, new_dims)
-    return x, new_size
+    return x
 
 
 def GeneratorCNN(z, base_size, num_filters, filter_size, channels_out, repeat_num,
@@ -38,36 +80,26 @@ def GeneratorCNN(z, base_size, num_filters, filter_size, channels_out, repeat_nu
     with tf.variable_scope("G", reuse=reuse) as vs:
         num_output = int(np.prod([base_size, base_size, num_filters]))
         x = layers.dense(z, num_output)
-        if verbose:
-            print(x)
+        if verbose: print(x)
         x = tf.reshape(x, [-1, base_size, base_size, num_filters])
-        if verbose:
-            print(x)
+        if verbose: print(x)
         
         current_dim = base_size
         current_num_filters = num_filters
         for idx in range(repeat_num):
-            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
-            x, current_dim = resize(x, 2 * current_dim)
             current_num_filters /= 2
+            x = conv2d(x, current_num_filters, filter_size, use_bias=use_bias,
+                batch_resid=False, extra_dense=False, resize_scale=2)
+            current_dim *= 2
 
-            #num_filters /= 2
-            #x = layers.conv2d_transpose(x, num_filters, filter_size, 2,
-            #    padding='same', use_bias=False, activation=None)
-            #x = layers.batch_normalization(x)
-            #x = act(x)
-            if verbose:
-                print(x)
+            if verbose: print(x)
 
         x = layers.conv2d(x, channels_out, filter_size, 1,
             padding='same', use_bias=use_bias, activation=None)
         x = tf.nn.tanh(x)
-        out, _ = resize(x, 2 * current_dim)
+        out = resize(x, 2 * current_dim)
 
-        #out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
-        #    padding='same', use_bias=False, activation=tf.nn.tanh)
-        if verbose:
-            print(out)
+        if verbose: print(out)
 
     variables = tf.contrib.framework.get_variables(vs)
     return out, variables
@@ -92,66 +124,51 @@ def AutoencoderCNN(x, base_size, scale_size, input_channel, z_num, repeat_num,
         # Encoder
         current_dim = scale_size
         for idx in range(repeat_num + 1):
-            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
-            x, current_dim = resize(x, current_dim / 2)
+            x = conv2d(x, current_num_filters, filter_size, use_bias=use_bias,
+                batch_resid=False, extra_dense=False, resize_scale=0.5)
+            current_dim /= 2
             current_num_filters *= 2
 
-            #channel_num = 2 ** (log2_num_filter - repeat_num + idx)
-            #x = layers.conv2d(x, channel_num, filter_size, 2,
-            #    padding='same', use_bias=False, activation=None)
-            #x = layers.batch_normalization(x)
-            #x = act(x, name='act{}'.format(idx))
-            if verbose:
-                print(x)
+            if verbose: print(x)
 
         final_conv_flat_dim = np.prod(x.shape.as_list()[1:])
         x = tf.reshape(x, [-1, final_conv_flat_dim])
-        if verbose:
-            print(x)
-        hidden = layers.dense(x, z_num)
 
-        # Possible restrictions on hidden layer.
-        #z = x = layers.batch_normalization(hidden) 
-        #z = x = tf.nn.tanh(hidden) 
-        z = x = hidden 
+        if verbose: print(x)
+
+        # Operations on hidden layer.
+        z = x = layers.dense(x, z_num)
+        #hidden = z = x = dense_batch_resid(hidden, use_bias=use_bias, activation=activation_choice)
+        #z = layers.batch_normalization(x) 
+        #hidden = z = x = tf.nn.tanh(hidden) 
+        #hidden = z = x = hidden 
+        z_to_decode = tf.nn.dropout(z, 1) 
 
         if verbose:
-            print(x)
-        if to_decode is not None:
-            x = to_decode
+            print(z_to_decode)
 
     with tf.variable_scope("ae_dec", reuse=reuse) as vs_dec:
         # Decoder
-        x = layers.dense(x, final_conv_flat_dim)
-        if verbose:
-            print(x)
+        x = layers.dense(z_to_decode, final_conv_flat_dim)
+        if verbose: print(x)
         x = tf.reshape(x, [-1, base_size, base_size, num_filters])
-        if verbose:
-            print(x)
+        if verbose: print(x)
         
         current_dim = base_size
         current_num_filters = num_filters 
         for idx in range(repeat_num):
             current_num_filters /= 2
-            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
-            x, current_dim = resize(x, 2 * current_dim)
+            x = conv2d(x, current_num_filters, filter_size, use_bias=use_bias,
+                batch_resid=False, extra_dense=False, resize_scale=2)
+            current_dim *= 2
 
-            #num_filters /= 2
-            #x = layers.conv2d_transpose(x, num_filters, filter_size, 2,
-            #    padding='same', use_bias=False, activation=None)
-            #x = layers.batch_normalization(x)
-            #x = act(x)
-            if verbose:
-                print(x)
+            if verbose: print(x)
 
         x = layers.conv2d(x, channels_out, filter_size, 1,
             padding='same', use_bias=use_bias, activation=None)
-        out, current_dim = resize(x, 2 * current_dim)
+        out = resize(x, 2 * current_dim)
 
-        #out = layers.conv2d_transpose(x, channels_out, filter_size, 2,
-        #    padding='same', use_bias=False, activation=tf.nn.tanh)
-        if verbose:
-            print(out)
+        if verbose: print(out)
 
     variables_enc = tf.contrib.framework.get_variables(vs_enc)
     variables_dec = tf.contrib.framework.get_variables(vs_dec)
@@ -174,29 +191,22 @@ def DiscriminatorCNN(x, base_size, scale_size, input_channel, repeat_num,
     current_num_filters = 2 ** (int(np.log2(num_filters)) - repeat_num)
 
     with tf.variable_scope("discrim", reuse=reuse) as vs_discrim:
-        # Encoder
+        # Discrim, like encoder. 
         current_dim = scale_size
         for idx in range(repeat_num + 1):
-            x = conv2d_bn_act(x, current_num_filters, filter_size, use_bias=use_bias)
-            x, current_dim = resize(x, current_dim / 2)
+            x = conv2d(x, current_num_filters, filter_size, use_bias=use_bias,
+                batch_resid=False, extra_dense=False, resize_scale=0.5)
+            current_dim /= 2
             current_num_filters *= 2
 
-            #channel_num = 2 ** (log2_num_filter - repeat_num + idx)
-            #x = layers.conv2d(x, channel_num, filter_size, 2,
-            #    padding='same', use_bias=False, activation=None)
-            #x = layers.batch_normalization(x)
-            #x = act(x, name='act{}'.format(idx))
-            if verbose:
-                print(x)
+            if verbose: print(x)
 
         final_conv_flat_dim = np.prod(x.shape.as_list()[1:])
         x = tf.reshape(x, [-1, final_conv_flat_dim])
-        if verbose:
-            print(x)
+        if verbose: print(x)
         logits = layers.dense(x, 1)
 
-        if verbose:
-            print(logits)
+        if verbose: print(logits)
 
         variables = tf.contrib.framework.get_variables(vs_discrim)
         return logits, variables 
@@ -281,7 +291,7 @@ def resize_(x, scale, data_format):
     return resize_nearest_neighbor(x, (h*scale, w*scale), data_format)
 
 
-def conv2d(x, W):
+def conv2d_(x, W):
   """conv2d returns a 2d convolution layer with full stride."""
   return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
 

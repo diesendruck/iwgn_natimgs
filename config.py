@@ -17,7 +17,7 @@ net_arg = add_argument_group('Network')
 net_arg.add_argument('--scale_size', type=int, default=64, choices=[32, 64, 128],
     help=('input image will be resized with the given value '
         'as width and height'))
-net_arg.add_argument('--base_size', type=int, default=4, choices=[4, 8],
+net_arg.add_argument('--base_size', type=int, default=4, choices=[4, 8, 16, 32],
     help=('generator and autoencoder have this dim as lowest height/width'))
 net_arg.add_argument('--num_conv_filters', type=int, default=64,
     choices=[2, 4, 6, 8, 16, 32, 64, 128, 256, 512, 1024],
