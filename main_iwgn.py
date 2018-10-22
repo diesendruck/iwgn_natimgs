@@ -21,6 +21,13 @@ def main(config):
 
     prepare_dirs_and_logger(config)
 
+    # Alert if config.log_dir already contains files.
+    if len(os.listdir(config.log_dir)) > 0:
+        print('log_dir contains files, continue? (c)')
+        pdb.set_trace()
+
+
+
     rng = np.random.RandomState(config.random_seed)
     tf.set_random_seed(config.random_seed)
 
@@ -40,9 +47,9 @@ def main(config):
     data_loader = get_loader(
         data_path, config.batch_size, config.scale_size,
         config.data_format, split_name='train', grayscale=config.grayscale)
-    images_user = load_user(config.dataset, data_path, config.scale_size, config.data_format,
+    images_user, images_user_weights = load_user(
+        config.dataset, data_path, config.scale_size, config.data_format,
         grayscale=config.grayscale)
-    images_user_weights = np.load('user_weights.npy')
     trainer = Trainer(config, data_loader, images_user, images_user_weights)
 
     if config.is_train:

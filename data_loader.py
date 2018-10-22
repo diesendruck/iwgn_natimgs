@@ -5,7 +5,9 @@ import sys
 import tensorflow as tf
 from glob import glob
 from PIL import Image
-sys.path.append('/home/maurice/global_utils')) 
+from PIL import ImageOps
+from PIL import ImageFilter
+sys.path.append('/home/maurice/global_utils')
 from global_utils import natural_sort
 
 
@@ -81,11 +83,15 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
 
 def load_user(dataset, data_path, scale_size, data_format, grayscale=False):
     user_path = os.path.join(data_path, 'user')
+
+    # Get user weights.
+    user_weights = np.reshape(np.load('user_weights.npy'), [-1, 1])
+
+    # Get user paths.
     assert os.path.exists(user_path), 'user_path does not exist'
-        
     paths_loaded = glob("{}/*.{}".format(user_path, 'jpg'))
     paths = natural_sort(paths_loaded)
-    pdb.set_trace()
+    assert len(paths) > 0, 'Did not find paths.'
 
     #resort_to_original_index = 0
     #if resort_to_original_index:
@@ -98,7 +104,6 @@ def load_user(dataset, data_path, scale_size, data_format, grayscale=False):
     #    np.save('user_weights_CELEBA_original_index.npy', weights_reordered)
     #    pdb.set_trace()
 
-    assert len(paths) > 0, 'Did not find paths.'
     if dataset == 'mnist':
         grayscale = True
     if grayscale:
@@ -109,10 +114,61 @@ def load_user(dataset, data_path, scale_size, data_format, grayscale=False):
                 axis=2)
             for path in paths])
     else:
-        user_imgs = np.array([
-            np.array(Image.open(path).resize((scale_size, scale_size),
-                Image.NEAREST))
-            for path in paths])
+        augment = 1
+        if augment:
+            final_imgs = []
+            final_weights = []
+            for i, path in enumerate(paths):
+                img_weight = user_weights[i]
+                if img_weight >= 0:
+                    # Data augmentation: mirrors, rotations, sharpening.
+                    img = Image.open(path)
+                    img_mirror = ImageOps.mirror(img)
+                    img_rotate = img.rotate(np.random.randint(-20,20))
+                    img_rotate2 = img.rotate(np.random.randint(-20,20))
+                    img_mirror_rotate = img_mirror.rotate(np.random.randint(-20,20))
+                    img_mirror_rotate2 = img_mirror.rotate(np.random.randint(-20,20))
+                    img_sharp = img.filter(ImageFilter.UnsharpMask())
+                    img_mirror_sharp = img_mirror.filter(ImageFilter.UnsharpMask())
+                    img_rotate_sharp = img_rotate.filter(ImageFilter.UnsharpMask())
+                    img_rotate2_sharp = img_rotate2.filter(ImageFilter.UnsharpMask())
+                    img_mirror_rotate_sharp = img_mirror_rotate.filter(
+                        ImageFilter.UnsharpMask())
+                    img_mirror_rotate2_sharp = img_mirror_rotate2.filter(
+                        ImageFilter.UnsharpMask())
+
+                    image_set = [img, img_mirror,
+                                 img_rotate, img_rotate2,
+                                 img_mirror_rotate, img_mirror_rotate2]
+                                 #img_sharp, img_mirror_sharp,
+                                 #img_rotate_sharp, img_rotate2_sharp,
+                                 #img_mirror_rotate_sharp, img_mirror_rotate2_sharp]
+
+                    image_set = [np.array(m.resize((scale_size, scale_size),
+                                                   Image.NEAREST)) \
+                                for m in image_set]
+
+                    final_imgs.extend(image_set)
+                    final_weights.extend([img_weight] * len(image_set))
+                else:
+                    img = np.array(Image.open(path).resize((scale_size, scale_size),
+                                   Image.NEAREST))
+                    final_imgs.append(img)
+                    final_weights.append(img_weight)
+
+            user_imgs = np.array(final_imgs)
+            user_weights = np.array(final_weights)
+            assert user_imgs.shape[0] == user_weights.shape[0], \
+                'img and wts mismatch'
+            print user_weights.shape
+            pdb.set_trace()
+
+        else:
+            user_imgs = np.array([
+                np.array(Image.open(path).resize((scale_size, scale_size),
+                    Image.NEAREST))
+                for path in paths])
     assert data_format == 'NHWC', 'data_format should be NHWC'
-    return user_imgs 
+
+    return user_imgs, user_weights
 

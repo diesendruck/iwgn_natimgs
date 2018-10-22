@@ -112,7 +112,7 @@ class Trainer(object):
     def __init__(self, config, data_loader, images_user, images_user_weights):
         self.config = config
         self.split = config.split
-        self.data_path = config.data_path
+        #self.data_path = config.data_path
         self.data_loader = data_loader
         self.images_user = images_user
         self.images_user_weights = images_user_weights
@@ -147,8 +147,9 @@ class Trainer(object):
         self.filter_size = config.filter_size
         self.use_bias = config.use_bias
 
-        self.model_dir = config.model_dir
-        self.load_path = config.load_path
+        #self.model_dir = config.model_dir
+        #self.load_path = config.load_path
+        self.log_dir = config.log_dir
 
         self.use_gpu = config.use_gpu
         self.data_format = config.data_format
@@ -173,9 +174,9 @@ class Trainer(object):
         self.build_model()
 
         self.saver = tf.train.Saver()
-        self.summary_writer = tf.summary.FileWriter(self.model_dir)
+        self.summary_writer = tf.summary.FileWriter(self.log_dir)
 
-        sv = tf.train.Supervisor(logdir=self.model_dir,
+        sv = tf.train.Supervisor(logdir=self.log_dir,
                                 is_chief=True,
                                 saver=self.saver,
                                 summary_op=None,
@@ -344,10 +345,13 @@ class Trainer(object):
         ## END: MMD DEFINITON
 
 
-        # Define losses.
+        ##########################################
+        # DEFINE LOSSES.
+
         self.lambda_mmd = tf.Variable(0., trainable=False, name='lambda_mmd')
         self.lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
 
+        # AUTOENCODER
         self.ae_loss_real = tf.cond(
             self.weighted,
             lambda: (
@@ -355,18 +359,27 @@ class Trainer(object):
                     tf.reduce_sum(tf.square(AE_x - x), [1, 2, 3]), [-1, 1]))),
             lambda: tf.reduce_mean(tf.square(AE_x - x)))
         self.ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
-        self.ae_loss = self.ae_loss_real + self.ae_loss_fake
+        #self.ae_loss = self.ae_loss_real + self.ae_loss_fake
+        self.ae_loss = self.ae_loss_real
 
-        # Define loss that restricts norm of encodings.
-        self.enc_norm_loss1 = tf.norm(self.x_enc) #+ tf.norm(self.g_enc)
+        # ENCODER NORM
+        # Penalize norm above 1.
+        #self.enc_norm_loss1 = tf.norm(self.x_enc)
+        #self.enc_norm_loss1 = tf.norm(self.x_enc) + tf.norm(self.g_enc)
+        self.enc_norm_loss1 = tf.nn.relu(tf.norm(self.x_enc) - 1.)
+        #self.enc_norm_loss1 = tf.abs(1. - tf.norm(self.x_enc))  # Want norm approx 1.
         self.enc_norm_loss2 = (
             MMD_vs_Normal_by_filter(
-                self.x_enc, np.ones([self.batch_size, 1], dtype=np.float32)) )#+
-            #MMD_vs_Normal_by_filter(
-            #    self.g_enc, np.ones([self.batch_size, 1], dtype=np.float32)))
-        self.enc_norm_loss = 0.1 * self.enc_norm_loss1 + 2 * self.enc_norm_loss2
+                self.x_enc, np.ones([self.batch_size, 1], dtype=np.float32)))
+        #self.enc_norm_loss2 = (
+        #    MMD_vs_Normal_by_filter(
+        #        self.x_enc, np.ones([self.batch_size, 1], dtype=np.float32)) +
+        #    MMD_vs_Normal_by_filter(
+        #        self.g_enc, np.ones([self.batch_size, 1], dtype=np.float32)))
+        self.enc_norm_loss = 1. * self.enc_norm_loss1 + 1. * self.enc_norm_loss2
 
 
+        # HINGE
         self.hinge_loss = tf.reduce_mean(tf.nn.relu(1. * 
             (tf.reduce_mean(self.x_enc, axis=0) - 
              tf.reduce_mean(self.g_enc, axis=0))))
@@ -381,9 +394,10 @@ class Trainer(object):
                            self.hinge_loss)
             self.g_loss = self.mmd2 + self.hinge_loss
         elif self.dataset == 'celeba':
-            self.d_loss = (self.lambda_ae * self.ae_loss + self.enc_norm_loss -
-                           self.lambda_mmd * self.mmd2 - 
-                           16 * self.hinge_loss)
+            #self.d_loss = (self.lambda_ae * self.ae_loss + self.enc_norm_loss -
+            #               self.lambda_mmd * self.mmd2 - 
+            #               16 * self.hinge_loss)
+            self.d_loss = self.lambda_ae * self.ae_loss + 20. * self.enc_norm_loss
             self.g_loss = (self.lambda_mmd * self.mmd2 + 
                            16 * self.hinge_loss)
             #self.d_loss = (1. * self.ae_loss +
@@ -418,10 +432,10 @@ class Trainer(object):
             # Clip encoder and decoder gradients.
             enc_grads_clipped = tuple(
                 [tf.clip_by_value(g, -0.01, 0.01) for g in enc_grads])
-            dec_grads_clipped = tuple(
-                [tf.clip_by_value(g, -0.01, 0.01) for g in dec_grads])
+            #dec_grads_clipped = tuple(
+            #    [tf.clip_by_value(g, -0.01, 0.01) for g in dec_grads])
             # Reassemble list of gradients, and list of vars.
-            d_grads = enc_grads_clipped + dec_grads_clipped
+            d_grads = enc_grads_clipped + dec_grads
             d_vars = enc_vars + dec_vars
             self.d_optim = d_opt.apply_gradients(zip(d_grads, d_vars))
 
@@ -435,6 +449,10 @@ class Trainer(object):
             self.g_optim = g_opt.minimize(
                 self.g_loss, var_list=self.g_var, global_step=self.step)
 
+            # TODO: TEST. TEMPORARILY TESTING ONLY AE_W
+            self.d_optim = d_opt.apply_gradients(
+                zip(d_grads, d_vars), global_step=self.step)
+
         else:
             ae_vars = self.d_var_enc + self.d_var_dec
             self.ae_optim = ae_opt.minimize(self.ae_loss_real, var_list=ae_vars)
@@ -442,11 +460,38 @@ class Trainer(object):
             self.g_optim = g_opt.minimize(
                 self.g_loss, var_list=self.g_var, global_step=self.step)
 
+
+        # SUMMARY
+        # Sort real images by predicted weight.
+        wts = tf.reshape(self.x_predicted_weights, [1, -1], name='wts')
+        _, wts_order = tf.nn.top_k(wts, k=self.batch_size, name='wts_argsort')
+        wts_order = tf.reshape(wts_order, [-1])
+        self.x_sorted = tf.gather(self.x, wts_order, name='imgs_sorted')
+        # Also, try random 10 from user, and logging them ordered.
+        #random_ten = np.random.choice(400, 10)
+        random_ten = tf.cast(tf.random_uniform(shape=(10,), minval=0, maxval=400), tf.int32)
+        tu = tf.gather(self.w_images, random_ten)
+
+        tu_wts = tf.reshape(tf.gather(self.w_weights, random_ten), [1, -1])
+        _, tu_wts_order = tf.nn.top_k(tu_wts, k=10)
+        tu_wts_order = tf.reshape(tu_wts_order, [-1])
+        tu_sorted_wts = tf.gather(tu, tu_wts_order)
+
+        tu_preds = tf.reshape(tf.gather(self.w_pred, random_ten), [1, -1])
+        _, tu_preds_order = tf.nn.top_k(tu_preds, k=10)
+        tu_preds_order = tf.reshape(tu_preds_order, [-1])
+        tu_sorted_preds = tf.gather(tu, tu_preds_order)
+        
+
         self.summary_op = tf.summary.merge([
+            tf.summary.image("imgs_sorted", self.x_sorted, max_outputs=64),
+            tf.summary.image("tu_sorted_wts", tu_sorted_wts, max_outputs=10),
+            tf.summary.image("tu_sorted_preds", tu_sorted_preds, max_outputs=10),
             tf.summary.image("a_g", self.g, max_outputs=10),
             tf.summary.image("b_AE_g", self.AE_g, max_outputs=10),
             tf.summary.image("c_x", self.x, max_outputs=10),
             tf.summary.image("d_AE_x", self.AE_x, max_outputs=10),
+            tf.summary.scalar("loss/w_loss", self.w_loss),
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
@@ -465,6 +510,8 @@ class Trainer(object):
         self.w_images = tf.placeholder(tf.float32,
             [None, self.scale_size, self.scale_size, self.channel], name='w_images')
         self.w_weights = tf.placeholder(tf.float32, [None, 1], name='w_weights')
+        self.dropout_pr = tf.placeholder(tf.float32, name='dropout_pr')
+        self.w_training = tf.placeholder(tf.bool, name='w_training_bool')
 
         # Convert NHWC [0, 255] to NCHW [-1, 1] for autoencoder.
         #w_images_for_ae = convert_255_to_n11(nhwc_to_nchw(self.w_images, is_tf=True))
@@ -476,10 +523,23 @@ class Trainer(object):
             self.filter_size, self.data_format, reuse=True,
             use_bias=self.use_bias)
 
-        self.dropout_pr = tf.placeholder(tf.float32, name='dropout_pr')
-        self.w_pred, self.w_vars = predict_weights_from_enc(
-            w_enc, self.dropout_pr, reuse=False)
-        self.w_loss = tf.reduce_mean(tf.squared_difference(self.w_weights, self.w_pred))
+
+        #self.w_pred, self.w_vars = predict_weights_from_enc(
+        #    w_enc, self.dropout_pr, reuse=False)
+        #self.w_pred, self.w_vars = predict_weights_from_images(
+        #    self.w_images, self.base_size, self.scale_size, self.channel,
+        #    self.repeat_num, self.num_conv_filters, self.filter_size,
+        #    self.data_format, reuse=False, dropout_pr=self.dropout_pr,
+        #    use_bias=self.use_bias, verbose=True)
+        self.w_pred, self.w_vars = RESNET_weights_from_images(
+            self.w_images, self.base_size, self.scale_size, self.channel,
+            self.repeat_num, self.num_conv_filters, self.filter_size,
+            self.data_format, reuse=False, dropout_pr=self.dropout_pr,
+            use_bias=self.use_bias, training=self.w_training, verbose=True)
+
+        #self.w_loss = tf.reduce_mean(tf.squared_difference(self.w_weights, self.w_pred))
+        #self.w_loss = tf.reduce_mean(tf.pow(tf.abs(self.w_weights - self.w_pred), 5))
+        self.w_loss = tf.norm(tf.abs(self.w_weights - self.w_pred), ord=3)
 
         # Define optimization procedure.
         if 1:
@@ -487,7 +547,7 @@ class Trainer(object):
                 self.w_loss, var_list=self.w_vars)
         else:
             # Same as  above, but with gradient clipping.
-            w_opt = tf.train.AdamOptimizer(self.w_lr)
+            w_opt = tf.train.RMSPropOptimizer(self.w_lr)
             w_gvs = w_opt.compute_gradients(
                 self.w_loss, var_list=self.w_vars)
             w_capped_gvs = (
@@ -500,7 +560,8 @@ class Trainer(object):
         weights = self.sess.run(self.w_pred,
             feed_dict={
                 self.w_images: inputs,
-                self.dropout_pr: 1.0})
+                self.dropout_pr: 1.0,
+                self.w_training: False})
         # Trim low weights to the minimum among the user weights.
         weights[weights < self.user_weights_min] = self.user_weights_min
         return weights
@@ -596,7 +657,7 @@ class Trainer(object):
             zs[i] = proportions[i] * z1 + (1 - proportions[i]) * z2
             gens[i] = self.generate(np.reshape(zs[i], [1, -1]))
         save_image(gens, '{}/interpolate_z_noise{}.png'.format(
-            self.model_dir, step))
+            self.log_dir, step))
 
         # Interpolate between two random encodings.
         #two_random_images = self.get_n_images(2, self.images_train)
@@ -613,7 +674,19 @@ class Trainer(object):
             zs[i] = proportions[i] * z1 + (1 - proportions[i]) * z2
             gens[i] = self.generate(np.reshape(zs[i], [1, -1]))
         save_image(gens, '{}/interpolate_z_enc{}.png'.format(
-            self.model_dir, step))
+            self.log_dir, step))
+
+
+    def save_sorted_images(self, step, images):
+        """Plot images sorted by predicted weight, and show distributions."""
+        # Get data and their predicted weights, and sort images by weight.
+        weights = self.predict_weights(images).flatten()
+        wt_order = np.argsort(weights)
+        images_sorted = images[wt_order]
+        weights_sorted = weights[wt_order]
+        #print(weights_sorted)
+        save_image(images_sorted, '{}/wt_sorted_data{}.png'.format(
+            self.log_dir, step), nrow=int(np.sqrt(self.batch_size)))
 
 
     def show_sorted_images(self, step, batch_train):
@@ -631,9 +704,9 @@ class Trainer(object):
 
         # Save the sorted versions of data and gens images.
         save_image(gens_sorted, '{}/sorted_gens{}.png'.format(
-            self.model_dir, step), nrow=int(np.sqrt(self.batch_size)))
+            self.log_dir, step), nrow=int(np.sqrt(self.batch_size)))
         save_image(data_sorted, '{}/sorted_data{}.png'.format(
-            self.model_dir, step), nrow=int(np.sqrt(self.batch_size)))
+            self.log_dir, step), nrow=int(np.sqrt(self.batch_size)))
         
 
         # CREATE UPSAMPLED VERSIONS FOR LINE PLOTS. ###########################
@@ -691,7 +764,7 @@ class Trainer(object):
             plt.legend()
             plt.title('KS(gens, up). dist={:.2f}, p={:.3f}'.format(ks_dist, ks_pval))
             plt.subplots_adjust(bottom=.25, left=.25)
-            plt.savefig('{}/sorted_lines{}.png'.format(self.model_dir, step))
+            plt.savefig('{}/sorted_lines{}.png'.format(self.log_dir, step))
             plt.legend()
             plt.close()
         else:
@@ -703,7 +776,7 @@ class Trainer(object):
             plt.legend()
             plt.title('KS(gens, up). dist={:.2f}, p={:.3f}'.format(ks_dist, ks_pval))
             plt.subplots_adjust(bottom=.25, left=.25)
-            plt.savefig('{}/sorted_lines{}.png'.format(self.model_dir, step))
+            plt.savefig('{}/sorted_lines{}.png'.format(self.log_dir, step))
             plt.legend()
             plt.close()
 
@@ -716,39 +789,38 @@ class Trainer(object):
         # Save some fixed images once.
         z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         x_fixed = self.get_images_from_loader()
-        save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
+        save_image(x_fixed, '{}/x_fixed.png'.format(self.log_dir))
 
         # One time, save images in order to apply ratings.
         user_imgs_dir = 'user_imgs'
         if not os.path.exists(user_imgs_dir):
             os.makedirs(user_imgs_dir)
         imgs = self.images_user
-        save_image(self.images_user, 'user_imgs/user.png'.format(self.model_dir))
-        for i in range(len(self.images_user)):
-            im = Image.fromarray(imgs[i])
-            im = im.convert('RGB')
-            im.save('{}/user_{}.png'.format(user_imgs_dir, i))
-        pdb.set_trace()
-
+        save_image(self.images_user, '{}/user.png'.format(user_imgs_dir))
+        #for i in range(1, len(self.images_user) + 1):
+        #    im = Image.fromarray(imgs[i])
+        #    im = im.convert('RGB')
+        #    im.save('{}/user_{}.png'.format(user_imgs_dir, i))
+        
         # Train generator.
         for step in trange(self.start_step, self.max_step):
-            # First do weighting fn updates.
+
+            # WEIGHTS OPTIM.
             batch_user, batch_user_weights = self.get_n_images_and_weights(
                 self.batch_size, self.images_user, self.images_user_weights)
-
             self.sess.run(self.w_optim,
                 feed_dict={
                     self.w_images: batch_user,
                     self.w_weights: batch_user_weights,
-                    self.dropout_pr: 0.9})
+                    self.dropout_pr: 0.5,
+                    self.w_training: True})
 
-            # Set up basket of items to be run. Occasionally fetch items
-            # useful for logging and saving.
+            # D AND G OPTIMS.
             fetch_dict = {
-                'd_optim': self.d_optim,
-                'g_optim': self.g_optim,
+                #'d_optim': self.d_optim,
+                #'g_optim': self.g_optim,  # TODO: TEST. TEMPORARILY TESTING ONLY AE_W
             }
-            schedule_optims = True 
+            schedule_optims = False 
             if schedule_optims:
                 if step < 25 or step % 500 == 0:
                     # 100 d_optim for 1 g_optim
@@ -761,9 +833,11 @@ class Trainer(object):
                         fetch_dict.update({
                             'd_optim{}'.format(i): self.d_optim})
 
+            # Occasionally fetch other nodes for logging/saving.
             if step % self.log_step == 0:
                 fetch_dict.update({
                     'summary': self.summary_op,
+                    'w_loss': self.w_loss,
                     'ae_loss_real': self.ae_loss_real,
                     'ae_loss_fake': self.ae_loss_fake,
                     'enc_norm_loss': self.enc_norm_loss,
@@ -773,6 +847,8 @@ class Trainer(object):
                     'mmd2': self.mmd2,
                     'x_enc': self.x_enc,
                     'g_enc': self.g_enc,
+                    'w_weights': self.w_weights,
+                    'w_pred': self.w_pred,
                 })
 
             # For MMDGAN training, use data with predicted weights.
@@ -787,7 +863,10 @@ class Trainer(object):
                     self.x_predicted_weights: batch_train_weights,
                     self.lambda_mmd: self.lambda_mmd_setting, 
                     self.lambda_ae: self.lambda_ae_setting,
-                    self.dropout_pr: 1.0,
+                    self.w_images: self.images_user, #
+                    self.w_weights: self.images_user_weights, #
+                    self.dropout_pr: 1,
+                    self.w_training: True,
                     self.weighted: self.weighted_setting})
 
             if step % self.lr_update_step == self.lr_update_step - 1:
@@ -797,6 +876,9 @@ class Trainer(object):
             if step % self.log_step == 0:
                 self.summary_writer.add_summary(result['summary'], step)
                 self.summary_writer.flush()
+                w_loss = result['w_loss']
+                w_weights = result['w_weights']
+                w_pred = result['w_pred']
                 ae_loss_real = result['ae_loss_real']
                 ae_loss_fake = result['ae_loss_fake']
                 enc_norm_loss = result['enc_norm_loss']
@@ -805,29 +887,62 @@ class Trainer(object):
                 hinge_loss = result['hinge_loss']
                 mmd2 = result['mmd2']
                 print(('[{}/{}] LOSSES: ae_real/fake: {:.3f}, {:.3f} '
-                    'mmd2: {:.3f}, hinge: {:.3f}, enc_norm: {:.3f} ({:.3f},{:.3f})').format(
+                    'mmd2: {:.3f}, hinge: {:.3f}, enc_norm: {:.3f} ({:.3f},'
+                    '{:.3f}), w_loss: {:.3f}').format(
                         step, self.max_step, ae_loss_real, ae_loss_fake,
-                        mmd2, hinge_loss, enc_norm_loss, enc_norm_loss1, enc_norm_loss2))
+                        mmd2, hinge_loss, enc_norm_loss, enc_norm_loss1,
+                        enc_norm_loss2, w_loss))
+
+
+                # Troubleshoot predictions for reals with 5+ weight.
+                true_w = np.reshape(w_weights, [1, -1])
+                pred_w = np.reshape(w_pred, [1, -1])
+                true_w_5m = np.where(true_w < 5)
+                true_w_5p = np.where(true_w >= 5)
+
+                # Perf on < 5.
+                print('Perf on < 5')
+                #print(np.round(true_w[true_w_5m], 1))
+                #print(np.round(pred_w[true_w_5m], 1))
+                print('  {}'.format(np.round(
+                    np.percentile(true_w[true_w_5m],
+                                  [0, 5, 20, 50, 80, 95, 100]), 1)))
+                print('  {}'.format(np.round(
+                    np.percentile(pred_w[true_w_5m],
+                                  [0, 5, 20, 50, 80, 95, 100]), 1)))
+                print('Perf on >= 5')
+                #print(np.round(true_w[true_w_5p], 1))
+                #print(np.round(pred_w[true_w_5p], 1))
+                print('  {}'.format(np.round(
+                    np.percentile(true_w[true_w_5p],
+                                  [0, 5, 20, 50, 80, 95, 100]), 1)))
+                print('  {}'.format(np.round(
+                    np.percentile(pred_w[true_w_5p],
+                                  [0, 5, 20, 50, 80, 95, 100]), 1)))
+                print('w_loss: {:.3f}'.format(w_loss))
+
+
                 # TROUBLESHOOT ENCODING RANGE.
                 x_enc_ = result['x_enc']
                 g_enc_ = result['g_enc']
-                print(np.round(np.percentile(x_enc_, [0, 5, 20, 50, 80, 95, 100]), 3))
-                print(np.round(np.percentile(g_enc_, [0, 5, 20, 50, 80, 95, 100]), 3))
+                print(np.round(np.percentile(x_enc_, [0, 20, 50, 80, 100]), 2))
+                #print(np.round(np.percentile(g_enc_, [0, 5, 20, 50, 80, 95, 100]), 3))
 
             if step % (self.save_step) == 0:
                 # First save a sample.
                 if step == 0:
                     #x_samp = self.get_n_images(1, self.images_train)
                     x_samp = batch_train[:1]  # This indexing keeps dims.
-                    save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
+                    save_image(x_samp, '{}/x_samp.png'.format(self.log_dir))
+                self.save_sorted_images(step, batch_train)
 
                 # Save images for fixed and random z.
                 gen_fixed = self.generate(
-                    z_fixed, root_path=self.model_dir, step='fix'+str(step),
+                    z_fixed, root_path=self.log_dir, step='fix'+str(step),
                     save=True)
                 z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
                 gen_rand = self.generate(
-                    z, root_path=self.model_dir, step='rand'+str(step),
+                    z, root_path=self.log_dir, step='rand'+str(step),
                     save=True)
 
                 # Save image of interpolation of z.

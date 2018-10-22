@@ -1,3 +1,4 @@
+from collections import namedtuple
 import pdb
 import numpy as np
 import tensorflow as tf
@@ -14,6 +15,7 @@ def activation_choice(x, name=None):
 
 def conv2d(x_orig, num_filters, filter_size, use_bias=False,
         batch_resid=False, extra_dense=False, resize_scale=None):
+    # Do batch residual.
     if batch_resid:
         x = layers.conv2d(x_orig, num_filters, filter_size, strides=1,
             padding='same', use_bias=use_bias, activation=None)
@@ -36,14 +38,14 @@ def conv2d(x_orig, num_filters, filter_size, use_bias=False,
     else:
         x = layers.conv2d(x_orig, num_filters, filter_size, strides=1,
             padding='same', use_bias=use_bias, activation=None)
-        #x = layers.batch_normalization(x)
+        x = layers.batch_normalization(x)
         out = activation_choice(x)
 
+    # Resize.
     if resize_scale:
-        # Resize convolution.
         current_dim = out.shape.as_list()[1]
         out = resize(out, int(resize_scale * current_dim))
-        # Alternatively, strided convolution.
+        # Alternatively, use strided convolution instead of this fn.
 
     return out
 
@@ -210,6 +212,260 @@ def DiscriminatorCNN(x, base_size, scale_size, input_channel, repeat_num,
 
         variables = tf.contrib.framework.get_variables(vs_discrim)
         return logits, variables 
+
+
+# TODO: ResNET
+def resnet_conv2d(x_orig, num_filters, filter_size, training=True,
+                  do_maxpool=False, verbose=False):
+    simple = True
+    if simple:
+        if verbose: print(x_orig)
+        net = layers.batch_normalization(x_orig, training=training)
+        net = tf.nn.relu(net)
+        net = layers.conv2d(
+            net, 
+            filters=num_filters,
+            kernel_size=filter_size,
+            padding='same',
+            activation=None)
+        if verbose: print(net)
+        net = layers.batch_normalization(net, training=training)
+        net = tf.nn.relu(net)
+        net = layers.conv2d(
+            net, 
+            filters=num_filters,
+            kernel_size=filter_size,
+            padding='same',
+            activation=None)
+        if verbose: print(net)
+        # Residual function (identity shortcut)
+        net = tf.add(x_orig, net)
+        if verbose: print('end of resnet\n', net)
+        return net
+
+    ############################################################
+    # With blocks and bottlenecks.
+    if verbose: print(x_orig)
+    with tf.variable_scope('conv_layer1'):
+        net = layers.conv2d(
+            x_orig, 
+            filters=num_filters,
+            kernel_size=filter_size,
+            padding='same',
+            activation=tf.nn.relu)
+        net = layers.batch_normalization(net, training=training)
+        if verbose: print(net)
+    if do_maxpool:
+        net = tf.layers.max_pooling2d(
+            net, 
+            pool_size=3,
+            strides=2,
+            padding='same')
+        if verbose: print(net)
+    # Chain of convnets.
+    with tf.variable_scope('conv_layer2'):
+        net = tf.layers.conv2d(
+            net,
+            filters=128,
+            kernel_size=1,
+            padding='valid')
+        if verbose: print(net)
+    with tf.variable_scope('group1/block1/conv_in'):
+        conv = tf.layers.conv2d(
+            net,
+            filters=128,
+            kernel_size=1,
+            padding='valid',
+            activation=tf.nn.relu)
+        conv = tf.layers.batch_normalization(conv, training=training)
+        if verbose: print(conv)
+    with tf.variable_scope('group1/block1/conv_bottleneck'):
+        conv = tf.layers.conv2d(
+            conv,
+            filters=32,
+            kernel_size=3,
+            padding='same',
+            activation=tf.nn.relu)
+        conv = tf.layers.batch_normalization(conv, training=training)
+        if verbose: print(conv)
+    # 1x1 convolution responsible for restoring dimension
+    with tf.variable_scope('group1/block1/conv_out'):
+        input_dim = net.get_shape()[-1].value
+        conv = tf.layers.conv2d(
+            conv,
+            filters=input_dim,
+            kernel_size=1,
+            padding='valid',
+            activation=tf.nn.relu)
+        conv = tf.layers.batch_normalization(conv, training=training)
+        if verbose: print(conv)
+
+    # shortcut connections that turn the network into its counterpart
+    # residual function (identity shortcut)
+    net = conv + net
+    if verbose: print('end of resnet\n', net)
+    return net
+
+
+def RESNET_weights_from_images(
+        x, base_size, scale_size, input_channel, repeat_num, num_filters,
+        filter_size, data_format, reuse, dropout_pr=1.0, use_bias=False,
+        training=True, verbose=False):
+    """Maps (batch_size, scale_size, scale_size, 3) to weight prediction."""
+    Group = namedtuple('Group', ['num_blocks', 'num_filters'])
+    groups = [Group(1, 32), Group(1, 64), Group(0, 256)]
+
+    verbose = True 
+    if verbose:
+        print('\n\nRESNET ARCHITECTURE\n')
+        print(x)
+
+    with tf.variable_scope('RESNET', reuse=reuse) as vs_resnet:
+        # First conv.
+        x = layers.conv2d(
+            x, 
+            filters=groups[0].num_filters,
+            kernel_size=7,
+            padding='same',
+            activation=tf.nn.relu)
+        if verbose: print(x)
+        # Max pool, half the size.
+        x = tf.layers.max_pooling2d(
+            x, 
+            pool_size=3,
+            strides=2,
+            padding='same')
+        if verbose: print(x)
+        # Layers of 64 filters, then half the input size.
+        for _ in range(groups[0].num_blocks):
+            x = resnet_conv2d(x, groups[0].num_filters, 3, training=training,
+                              verbose=verbose)
+        if verbose: print(x)
+        x = tf.layers.max_pooling2d(
+            x, 
+            pool_size=3,
+            strides=2,
+            padding='same')
+        if verbose: print(x)
+        # Layers of 128 filters, then half the input size.
+        if groups[1].num_blocks > 0:
+            x = tf.layers.conv2d(
+                x,
+                filters=groups[1].num_filters,
+                kernel_size=1,
+                padding='same',
+                activation=None,
+                bias_initializer=None)
+        for _ in range(groups[1].num_blocks):
+            x = resnet_conv2d(x, groups[1].num_filters, 3, training=training,
+                              verbose=verbose)
+        if verbose: print(x)
+        x = tf.layers.max_pooling2d(
+            x, 
+            pool_size=3,
+            strides=2,
+            padding='same')
+        if verbose: print(x)
+        # Layers of 256 filters, then half the input size.
+        if groups[2].num_blocks > 0:
+            x = tf.layers.conv2d(
+                x,
+                filters=groups[2].num_filters,
+                kernel_size=1,
+                padding='same',
+                activation=None,
+                bias_initializer=None)
+        for _ in range(groups[2].num_blocks):
+            x = resnet_conv2d(x, groups[2].num_filters, 3, training=training,
+                              verbose=verbose)
+        if verbose: print(x)
+        #x = tf.layers.max_pooling2d(
+        #    x, 
+        #    pool_size=3,
+        #    strides=2,
+        #    padding='same')
+        #if verbose: print(x)
+
+        # Average pool at the end.
+        x_shape = x.get_shape().as_list()
+        x = tf.nn.avg_pool(
+            x,
+            ksize=[1, x_shape[1], x_shape[2], 1],
+            strides=[1, 1, 1, 1],
+            padding='VALID')
+        if verbose: print(x)
+
+        # Final fully connected layer to weight prediction.
+        final_conv_flat_dim = np.prod(x.shape.as_list()[1:])
+        x = tf.reshape(x, [-1, final_conv_flat_dim])
+        if verbose: print(x)
+
+        x = layers.dense(x, 500)
+        x = tf.nn.dropout(x, dropout_pr)
+        if verbose: print(x)
+        predictions = layers.dense(x, 1)
+        if verbose: print(predictions)
+
+    variables = tf.contrib.framework.get_variables(vs_resnet)
+    return predictions, variables 
+
+
+def predict_weights_from_images(
+        x, base_size, scale_size, input_channel, repeat_num, num_filters,
+        filter_size, data_format, reuse, dropout_pr=1.0, use_bias=False,
+        verbose=False):
+    """Maps (batch_size, scale_size, scale_size, 3) to weight prediction."""
+
+    verbose = True 
+    if verbose:
+        print('\n\nimgs2wts ARCHITECTURE\n')
+        print(x)
+
+    channels_out = x.shape.as_list()[-1]
+    current_num_filters = 2 ** (int(np.log2(num_filters)) - repeat_num)
+
+    with tf.variable_scope('img2wts', reuse=reuse) as vs_img2wts:
+        # like encoder. 
+        current_dim = scale_size
+        for idx in range(repeat_num + 1):
+            x = conv2d(x, current_num_filters, filter_size, use_bias=use_bias,
+                batch_resid=False, extra_dense=False, resize_scale=0.5)
+            current_dim /= 2
+            current_num_filters *= 2
+
+            if verbose: print(x)
+
+        final_conv_flat_dim = np.prod(x.shape.as_list()[1:])
+        x = tf.reshape(x, [-1, final_conv_flat_dim])
+        if verbose: print(x)
+
+        x = tf.nn.dropout(x, dropout_pr)
+        x = layers.dense(x, 64, activation=tf.nn.elu)
+        x = tf.nn.dropout(x, dropout_pr)
+        if verbose: print(x)
+        x = layers.dense(x, 8, activation=tf.nn.elu)
+        if verbose: print(x)
+        #x = layers.dense(x, 256, activation=tf.nn.elu)
+        #x = tf.nn.dropout(x, dropout_pr)
+        #if verbose: print(x)
+        #x = layers.dense(x, 128, activation=tf.nn.elu)
+        #x = tf.nn.dropout(x, dropout_pr)
+        #if verbose: print(x)
+        #x = layers.dense(x, 64, activation=tf.nn.elu)
+        #x = tf.nn.dropout(x, dropout_pr)
+        #if verbose: print(x)
+        #x = layers.dense(x, 32, activation=tf.nn.elu)
+        #x = tf.nn.dropout(x, dropout_pr)
+        #if verbose: print(x)
+        #x = layers.dense(x, 16, activation=tf.nn.elu)
+        #x = tf.nn.dropout(x, dropout_pr)
+        #if verbose: print(x)
+
+        predictions = layers.dense(x, 1)
+        if verbose: print(predictions)
+
+        variables = tf.contrib.framework.get_variables(vs_img2wts)
+        return predictions, variables 
 
 
 def MMD(data, gen, t_mean, t_cov_inv, sigma=1):

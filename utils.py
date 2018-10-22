@@ -21,26 +21,31 @@ def prepare_dirs_and_logger(config):
 
     logger.addHandler(handler)
 
-    if config.load_path:
-        if config.load_path.startswith(config.log_dir):
-            config.model_dir = config.load_path
-        else:
-            if config.load_path.startswith(config.dataset):
-                config.model_name = config.load_path
-            else:
-                config.model_name = "{}_{}".format(config.dataset, config.load_path)
+    # CREATE LOG DIR OR IDENTIFY EXISTING.
+    #if config.load_path:
+    #    if config.load_path.startswith(config.log_dir):
+    #        config.model_dir = config.load_path
+    #    else:
+    #        if config.load_path.startswith(config.dataset):
+    #            config.model_name = config.load_path
+    #        else:
+    #            config.model_name = "{}_{}".format(config.dataset, config.load_path)
+    #else:
+    #    # TODO: Should include all typical settings.
+    #    if config.tag.startswith('test'):
+    #        config.model_name = "{}".format(config.tag)
+    #    else:
+    #        config.model_name = "time_{}_{}".format(config.tag, get_time())
+    if config.tag.startswith('test'):
+        config.log_dir = 'logs/{}'.format(config.tag)
     else:
-        # TODO: Should include all typical settings.
-        if config.tag.startswith('test'):
-            config.model_name = "{}".format(config.tag)
-        else:
-            config.model_name = "time_{}_{}".format(config.tag, get_time())
+        config.log_dir = 'logs/time_{}_{}'.format(config.tag, get_time())
 
-    if not hasattr(config, 'model_dir'):
-        config.model_dir = os.path.join(config.log_dir, config.model_name)
-    config.data_path = os.path.join(config.data_dir, config.dataset)
+    # DEFINE DATA LOCATION.
+    config.data_path = os.path.join('data', config.dataset)
 
-    for path in [config.log_dir, config.data_dir, config.model_dir]:
+    # CREATE DIRS IF THEY DON'T EXIST.
+    for path in ['logs', 'data', config.log_dir]:
         if not os.path.exists(path):
             os.makedirs(path)
 
@@ -48,9 +53,9 @@ def get_time():
     return datetime.now().strftime("%m%d_%H%M%S")
 
 def save_config(config):
-    param_path = os.path.join(config.model_dir, "params.json")
+    param_path = os.path.join(config.log_dir, "params.json")
 
-    print("[*] MODEL dir: %s" % config.model_dir)
+    print("[*] MODEL dir: %s" % config.log_dir)
     print("[*] PARAM path: %s" % param_path)
 
     with open(param_path, 'w') as fp:
